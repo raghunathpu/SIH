@@ -21,11 +21,26 @@ export function useSimulation() {
   }, []);
 
   const connect = useCallback(() => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) return;
+    // Close any existing connection cleanly before creating a new one
+    if (wsRef.current) {
+      const old = wsRef.current;
+      wsRef.current = null;
+      // Remove handlers so the old WS doesn't interfere
+      old.onopen = null;
+      old.onmessage = null;
+      old.onclose = null;
+      old.onerror = null;
+      if (old.readyState === WebSocket.OPEN || old.readyState === WebSocket.CONNECTING) {
+        old.close();
+      }
+    }
 
     const ws = new WebSocket(WS_URL);
+    wsRef.current = ws;
 
     ws.onopen = () => {
+      // Guard: only act if this is still the current WebSocket
+      if (wsRef.current !== ws) return;
       setConnected(true);
       if (reconnectTimer.current) {
         clearTimeout(reconnectTimer.current);
@@ -34,6 +49,8 @@ export function useSimulation() {
     };
 
     ws.onmessage = (evt) => {
+      // Guard: only process messages from the current WebSocket
+      if (wsRef.current !== ws) return;
       try {
         const data = JSON.parse(evt.data);
         if (data.type === 'benchmark_result') {
@@ -50,6 +67,12 @@ export function useSimulation() {
     };
 
     ws.onclose = () => {
+      // Guard: only handle close for the current WebSocket.
+      // This is critical for React StrictMode double-mount — without
+      // this guard, a closing stale WS would null out wsRef.current
+      // even though a newer WS has already been assigned to it.
+      if (wsRef.current !== ws) return;
+
       setConnected(false);
       wsRef.current = null;
       // Auto-reconnect
@@ -57,17 +80,28 @@ export function useSimulation() {
     };
 
     ws.onerror = () => {
-      ws.close();
+      if (wsRef.current === ws) {
+        ws.close();
+      }
     };
-
-    wsRef.current = ws;
   }, []);
 
   useEffect(() => {
     connect();
     return () => {
-      if (reconnectTimer.current) clearTimeout(reconnectTimer.current);
-      wsRef.current?.close();
+      if (reconnectTimer.current) {
+        clearTimeout(reconnectTimer.current);
+        reconnectTimer.current = null;
+      }
+      if (wsRef.current) {
+        const ws = wsRef.current;
+        wsRef.current = null;
+        ws.onopen = null;
+        ws.onmessage = null;
+        ws.onclose = null;
+        ws.onerror = null;
+        ws.close();
+      }
     };
   }, [connect]);
 
