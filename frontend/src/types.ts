@@ -1,3 +1,5 @@
+export type ClickMode = 'OBSTACLE' | 'ROBOT';
+
 export interface Position {
   x: number;
   y: number;

@@ -359,6 +359,50 @@ h1, h2, h3, h4, h5, h6 {
 .status-dot.inactive { background: var(--status-error); box-shadow: 0 0 10px var(--status-error); }
 .status-dot.warning { background: var(--status-warning); box-shadow: 0 0 10px var(--status-warning); }
 
+/* Click-mode toggle (Obstacle / Add Robot) */
+.click-mode-toggle {
+  display: flex;
+  background: var(--bg-surface-elevated);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  padding: 2px;
+  gap: 2px;
+}
+
+.click-mode-btn {
+  padding: 0.3rem 0.75rem;
+  font-size: 0.75rem;
+  font-weight: 500;
+  border-radius: 4px;
+  cursor: pointer;
+  color: var(--text-secondary);
+  background: transparent;
+  border: none;
+  transition: all 0.2s;
+  font-family: var(--font-sans);
+  white-space: nowrap;
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.click-mode-btn:hover {
+  color: var(--text-primary);
+  background: var(--bg-surface-hover);
+}
+
+.click-mode-btn.active-obstacle {
+  background: rgba(239, 68, 68, 0.15);
+  color: #f87171;
+  box-shadow: 0 0 8px rgba(239, 68, 68, 0.2);
+}
+
+.click-mode-btn.active-robot {
+  background: rgba(59, 130, 246, 0.15);
+  color: #60a5fa;
+  box-shadow: 0 0 8px rgba(59, 130, 246, 0.2);
+}
+
 .progress-bg {
   background: rgba(255,255,255,0.1);
   height: 6px;

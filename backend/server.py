@@ -243,6 +243,12 @@ async def websocket_endpoint(ws: WebSocket):
                 engine.recover_robot(robot_id)
                 await _broadcast_state()
 
+            elif action == "add_robot":
+                x, y = int(cmd.get("x", 0)), int(cmd.get("y", 0))
+                robot_id = engine.add_robot(x, y)
+                if robot_id:
+                    await _broadcast_state(include_warehouse=False)
+
             elif action == "inject_latency":
                 val = int(cmd.get("value", 1))
                 engine.message_bus.base_latency_ticks = val

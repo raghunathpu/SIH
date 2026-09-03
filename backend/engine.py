@@ -395,6 +395,44 @@ class SimulationEngine:
             self.robots[robot_id].make_available(self.tick)
             self._log_event("SYSTEM", robot_id, f"{robot_id} recovered")
 
+    def add_robot(self, x: int, y: int) -> str:
+        """Dynamically add a new robot at position (x, y) during a running simulation."""
+        pos = Position(x, y)
+
+        # Check the cell is walkable and not occupied
+        if not self.warehouse.is_walkable(pos):
+            return ""
+        for r in self.robots.values():
+            if r.position == pos:
+                return ""
+
+        # Generate a unique ID — find the next free AMR number
+        existing_nums = set()
+        for rid in self.robots:
+            if rid.startswith("AMR-"):
+                try:
+                    existing_nums.add(int(rid.split("-")[1]))
+                except ValueError:
+                    pass
+        n = 1
+        while n in existing_nums:
+            n += 1
+        robot_id = f"AMR-{n:02d}"
+
+        color = ROBOT_COLORS[(len(self.robots)) % len(ROBOT_COLORS)]
+        agent = RobotAgent(
+            robot_id=robot_id,
+            start_position=pos,
+            color=color,
+            warehouse=self.warehouse,
+            message_bus=self.message_bus,
+            task_pool=self.task_pool,
+        )
+        agent.baseline_mode = self.baseline_mode
+        self.robots[robot_id] = agent
+        self._log_event("SYSTEM", robot_id, f"Robot {robot_id} deployed at ({x}, {y})")
+        return robot_id
+
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     #  LOGGING
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

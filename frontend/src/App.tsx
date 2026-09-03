@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useCallback } from 'react';
 import { useSimulation } from './useSimulation';
 import WarehouseCanvas from './components/WarehouseCanvas';
 import { FleetPanel } from './components/FleetPanel';
@@ -10,6 +10,7 @@ import { MetricsBar } from './components/MetricsBar';
 import { BenchmarkView } from './components/BenchmarkView';
 import { NetworkTopologyView } from './components/NetworkTopologyView';
 import { TelemetryGrid } from './components/TelemetryGrid';
+import type { ClickMode } from './types';
 import './index.css';
 
 type Tab = 'WAREHOUSE' | 'NETWORK' | 'TELEMETRY';
@@ -18,6 +19,16 @@ function App() {
   const sim = useSimulation();
   const [selectedRobotId, setSelectedRobotId] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<Tab>('WAREHOUSE');
+  const [clickMode, setClickMode] = useState<ClickMode>('OBSTACLE');
+
+  /** Route grid cell clicks based on the active click mode */
+  const handleCellClick = useCallback((x: number, y: number) => {
+    if (clickMode === 'ROBOT') {
+      sim.addRobot(x, y);
+    } else {
+      sim.injectObstacle(x, y);
+    }
+  }, [clickMode, sim.addRobot, sim.injectObstacle]);
 
   return (
     <>
@@ -43,6 +54,28 @@ function App() {
         </div>
 
         <div className="flex gap-4 items-center">
+          {/* Click mode toggle — only relevant in Grid View */}
+          {activeTab === 'WAREHOUSE' && (
+            <div className="click-mode-toggle">
+              <button
+                id="click-mode-obstacle"
+                className={`click-mode-btn ${clickMode === 'OBSTACLE' ? 'active-obstacle' : ''}`}
+                onClick={() => setClickMode('OBSTACLE')}
+                title="Click grid cells to place obstacles"
+              >
+                🧱 Obstacle
+              </button>
+              <button
+                id="click-mode-robot"
+                className={`click-mode-btn ${clickMode === 'ROBOT' ? 'active-robot' : ''}`}
+                onClick={() => setClickMode('ROBOT')}
+                title="Click grid cells to deploy a new robot"
+              >
+                🤖 Add Robot
+              </button>
+            </div>
+          )}
+
           <div className="flex items-center gap-2 bg-surface-elevated px-3 py-1.5 rounded-full border border-white/5">
             <span className={`status-dot ${sim.connected ? 'active' : 'inactive'}`}></span>
             <span className="text-sm text-secondary font-medium">{sim.connected ? 'WebSocket Active' : 'Offline'}</span>
@@ -76,7 +109,7 @@ function App() {
               state={sim.state} 
               selectedRobot={selectedRobotId}
               onSelectRobot={setSelectedRobotId}
-              onCellClick={sim.injectObstacle}
+              onCellClick={handleCellClick}
             />
           </div>
 
