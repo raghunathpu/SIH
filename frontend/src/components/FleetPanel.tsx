@@ -13,7 +13,7 @@ export const FleetPanel: React.FC<FleetPanelProps> = ({ state, onSelectRobot, se
   const robots = Object.values(state.robots);
 
   return (
-    <div className="card" style={{ height: '100%' }}>
+    <div className="card" style={{ flex: 1, minHeight: 0 }}>
       <div className="card-header">
         <span>Active Fleet</span>
         <span className="badge badge-success">

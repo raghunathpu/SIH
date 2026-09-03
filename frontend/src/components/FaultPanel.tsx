@@ -14,14 +14,14 @@ export const FaultPanel: React.FC<Props> = ({ state, onInjectLatency, onDropPack
   if (!state) return null;
 
   return (
-    <div className="card" style={{ marginTop: '1rem', background: 'var(--bg-surface-elevated)' }}>
-      <div className="card-header border-b border-white/5 pb-3 mb-3">
+    <div className="card" style={{ background: 'var(--bg-surface-elevated)', flexShrink: 0 }}>
+      <div className="card-header">
         <h3 className="font-semibold text-sm tracking-wide text-primary flex items-center gap-2">
           <span>⚡</span> Fault Injection
         </h3>
       </div>
       
-      <div className="space-y-4">
+      <div className="card-body" style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
         <div>
           <div className="flex justify-between text-xs mb-1">
             <span className="text-secondary">Network Latency</span>
