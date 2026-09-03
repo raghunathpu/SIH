@@ -11,12 +11,12 @@ export const TelemetryGrid: React.FC<Props> = ({ state }) => {
   const robots = Object.values(state.robots);
 
   return (
-    <div className="card h-full" style={{ height: '100%' }}>
-      <div className="card-header flex justify-between items-center">
+    <div className="card h-full" style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
+      <div className="card-header flex justify-between items-center" style={{ flexShrink: 0 }}>
         <h2 className="text-lg text-primary">Edge Hardware Telemetry</h2>
         <div className="badge badge-success">Live Network</div>
       </div>
-      <div className="card-body" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: '1rem' }}>
+      <div className="card-body" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: '1rem', overflowY: 'auto', flex: 1, minHeight: 0 }}>
         {robots.map(r => (
           <div key={r.robot_id} style={{ 
             background: 'var(--bg-surface-elevated)', 
