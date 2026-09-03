@@ -90,7 +90,7 @@ export const RobotDetail: React.FC<RobotDetailProps> = ({ state, robotId }) => {
               letterSpacing: '0.05em'
             }}
             onClick={() => {
-              fetch(`/api/fail_robot/${robot.robot_id}`, { method: 'POST' })
+              fetch(`http://${window.location.hostname}:8000/api/fail_robot/${robot.robot_id}`, { method: 'POST' })
                 .then(res => res.text())
                 .then(text => {
                   if (text) console.log('Failover triggered:', JSON.parse(text));

@@ -66,8 +66,12 @@ export function useSimulation() {
     };
   }, [connect]);
 
-  const send = useCallback((action: string, data?: Record<string, any>) => {
+  const send = useCallback((action: string, data?: any) => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
+      // Defensive check against passing React events or circular structures
+      if (data && (data._reactName || data.nativeEvent || data instanceof Event)) {
+        data = {};
+      }
       wsRef.current.send(JSON.stringify({ action, ...data }));
     }
   }, []);
