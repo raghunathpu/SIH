@@ -117,15 +117,18 @@ export default function WarehouseCanvas({ state, selectedRobot, onSelectRobot, o
     const gx = Math.floor(adjustedMx / cellSize);
     const gy = Math.floor(adjustedMy / cellSize);
 
-    // Check if a robot is near this cell
+    // Always fire onCellClick for valid grid coordinates
+    if (onCellClick && gx >= 0 && gx < wh.width && gy >= 0 && gy < wh.height) {
+      onCellClick(gx, gy);
+    }
+
+    // Check if a robot is near this cell for selection purposes
     const robots = Object.values(state.robots);
     const clicked = robots.find(r =>
       Math.abs(r.render_x - gx) < 0.8 && Math.abs(r.render_y - gy) < 0.8
     );
     if (clicked) {
       onSelectRobot(clicked.robot_id);
-    } else if (onCellClick && gx >= 0 && gx < wh.width && gy >= 0 && gy < wh.height) {
-      onCellClick(gx, gy);
     } else {
       onSelectRobot(null);
     }

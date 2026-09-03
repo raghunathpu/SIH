@@ -433,6 +433,21 @@ class SimulationEngine:
         self._log_event("SYSTEM", robot_id, f"Robot {robot_id} deployed at ({x}, {y})")
         return robot_id
 
+    def remove_robot(self, robot_id: str):
+        """Dynamically remove a robot from the simulation."""
+        if robot_id in self.robots:
+            agent = self.robots[robot_id]
+            # Release its task back to the pool if it has one
+            if agent.current_task:
+                task = self.task_pool.get_task(agent.current_task)
+                if task:
+                    from models import TaskStatus
+                    task.status = TaskStatus.PENDING
+                    task.assigned_robot = None
+            
+            del self.robots[robot_id]
+            self._log_event("SYSTEM", robot_id, f"Robot {robot_id} removed")
+
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     #  LOGGING
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

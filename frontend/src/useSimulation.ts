@@ -148,6 +148,8 @@ export function useSimulation() {
     send('inject_obstacle', { x, y }), [send]);
   const addRobot = useCallback((x: number, y: number) =>
     send('add_robot', { x, y }), [send]);
+  const removeRobot = useCallback((robot_id: string) =>
+    send('remove_robot', { robot_id }), [send]);
   const removeObstacle = useCallback((x: number, y: number) =>
     send('remove_obstacle', { x, y }), [send]);
   const failRobot = useCallback((robot_id: string) =>
@@ -167,7 +169,7 @@ export function useSimulation() {
     scenarios,
     play, pause, step, reset,
     setSpeed, loadScenario,
-    injectObstacle, addRobot, removeObstacle,
+    injectObstacle, addRobot, removeRobot, removeObstacle,
     failRobot, recoverRobot,
     runBenchmark, demoMode,
     injectLatency, dropPackets,

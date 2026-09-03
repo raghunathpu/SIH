@@ -23,12 +23,28 @@ function App() {
 
   /** Route grid cell clicks based on the active click mode */
   const handleCellClick = useCallback((x: number, y: number) => {
+    if (!sim.state) return;
+
     if (clickMode === 'ROBOT') {
-      sim.addRobot(x, y);
+      const robotEntry = Object.entries(sim.state.robots).find(
+        ([_, r]) => r.position[0] === x && r.position[1] === y
+      );
+      if (robotEntry) {
+        sim.removeRobot(robotEntry[0]);
+      } else {
+        sim.addRobot(x, y);
+      }
     } else {
-      sim.injectObstacle(x, y);
+      const isObstacle = sim.state.warehouse.dynamic_obstacles.some(
+        obs => obs[0] === x && obs[1] === y
+      );
+      if (isObstacle) {
+        sim.removeObstacle(x, y);
+      } else {
+        sim.injectObstacle(x, y);
+      }
     }
-  }, [clickMode, sim.addRobot, sim.injectObstacle]);
+  }, [clickMode, sim]);
 
   return (
     <>

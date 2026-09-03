@@ -226,12 +226,12 @@ async def websocket_endpoint(ws: WebSocket):
             elif action == "inject_obstacle":
                 x, y = cmd.get("x", 0), cmd.get("y", 0)
                 engine.inject_obstacle(x, y)
-                await _broadcast_state()
+                await _broadcast_state(include_warehouse=True)
 
             elif action == "remove_obstacle":
                 x, y = cmd.get("x", 0), cmd.get("y", 0)
                 engine.remove_obstacle(x, y)
-                await _broadcast_state()
+                await _broadcast_state(include_warehouse=True)
 
             elif action == "fail_robot":
                 robot_id = cmd.get("robot_id", "")
@@ -248,6 +248,11 @@ async def websocket_endpoint(ws: WebSocket):
                 robot_id = engine.add_robot(x, y)
                 if robot_id:
                     await _broadcast_state(include_warehouse=False)
+
+            elif action == "remove_robot":
+                robot_id = cmd.get("robot_id", "")
+                engine.remove_robot(robot_id)
+                await _broadcast_state(include_warehouse=False)
 
             elif action == "inject_latency":
                 val = int(cmd.get("value", 1))
