@@ -100,6 +100,10 @@ class TaskPool:
     def get_task(self, task_id: str) -> Optional[Task]:
         return self.tasks.get(task_id)
 
+    def get_all_tasks(self) -> List[Task]:
+        """Return all tasks in the pool."""
+        return list(self.tasks.values())
+
     def assign_task(self, task_id: str, robot_id: str, tick: int):
         """Mark a task as assigned to a robot."""
         task = self.tasks.get(task_id)
@@ -194,7 +198,8 @@ class TaskBroker:
                 msg = Message(
                     sender_id="SYSTEM",
                     type=MessageType.TASK_OFFER,
-                    payload={"task_id": task.task_id, "priority": task.priority, "pickup": {"x": task.pickup.x, "y": task.pickup.y}}
+                    timestamp=current_tick,
+                    data={"task_id": task.task_id, "priority": task.priority, "pickup": {"x": task.pickup.x, "y": task.pickup.y}}
                 )
                 self.message_bus.send(msg)
 
@@ -202,8 +207,8 @@ class TaskBroker:
         inbox = self.message_bus.receive("SYSTEM")
         for msg in inbox:
             if msg.type == MessageType.TASK_BID:
-                task_id = msg.payload.get("task_id")
-                cost = msg.payload.get("cost")
+                task_id = msg.data.get("task_id")
+                cost = msg.data.get("cost")
                 if task_id in self.auctions:
                     self.auctions[task_id][msg.sender_id] = cost
 
@@ -219,7 +224,8 @@ class TaskBroker:
                         sender_id="SYSTEM",
                         target_id=best_robot,
                         type=MessageType.TASK_AWARD,
-                        payload={"task_id": task_id}
+                        timestamp=current_tick,
+                        data={"task_id": task_id}
                     )
                     self.message_bus.send(award_msg)
                 

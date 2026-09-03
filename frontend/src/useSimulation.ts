@@ -39,7 +39,12 @@ export function useSimulation() {
         if (data.type === 'benchmark_result') {
           setBenchmark(data.data);
         } else {
-          setState(data);
+          setState(prev => {
+            if (prev && !data.warehouse) {
+              data.warehouse = prev.warehouse;
+            }
+            return data;
+          });
         }
       } catch {}
     };
@@ -65,6 +70,27 @@ export function useSimulation() {
       wsRef.current?.close();
     };
   }, [connect]);
+
+  // Keyboard shortcuts
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Don't trigger if user is typing in an input
+      if (document.activeElement?.tagName === 'INPUT') return;
+      
+      if (e.code === 'Space') {
+        e.preventDefault();
+        setState(s => {
+          if (s) {
+             if (s.running) send('pause');
+             else send('play');
+          }
+          return s;
+        });
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
 
   const send = useCallback((action: string, data?: any) => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
@@ -94,6 +120,8 @@ export function useSimulation() {
     send('recover_robot', { robot_id }), [send]);
   const runBenchmark = useCallback((scenario?: string) =>
     send('run_benchmark', { scenario: scenario || '10_BENCHMARK' }), [send]);
+  const injectLatency = useCallback((value: number) => send('inject_latency', { value }), [send]);
+  const dropPackets = useCallback((value: number) => send('drop_packets', { value }), [send]);
   const demoMode = useCallback(() => send('demo_mode'), [send]);
 
   return {
@@ -106,5 +134,6 @@ export function useSimulation() {
     injectObstacle, removeObstacle,
     failRobot, recoverRobot,
     runBenchmark, demoMode,
+    injectLatency, dropPackets,
   };
 }

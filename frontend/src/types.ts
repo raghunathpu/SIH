@@ -27,6 +27,9 @@ export interface RobotData {
   decision_reason: string;
   moving: boolean;
   move_progress: number;
+  has_item: boolean;
+  messages_sent: number;
+  messages_received: number;
   hardware: {
     cpu: number;
     ram: number;
@@ -34,6 +37,7 @@ export interface RobotData {
     thermal: number;
   };
 }
+
 
 export interface TaskData {
   task_id: string;
@@ -94,6 +98,21 @@ export interface WarehouseData {
   dynamic_obstacles: [number, number][];
 }
 
+export interface CommEdge {
+  from: string;
+  to: string;
+  type: string;
+  tick: number;
+  count?: number;
+}
+
+export interface CommSummary {
+  from: string;
+  to: string;
+  total: number;
+  by_type: Record<string, number>;
+}
+
 export interface SimulationState {
   tick: number;
   running: boolean;
@@ -106,6 +125,8 @@ export interface SimulationState {
   warehouse: WarehouseData;
   metrics: MetricsData;
   events: EventData[];
+  comm_graph: CommEdge[];
+  comm_summary: CommSummary[];
 }
 
 export interface BenchmarkResult {

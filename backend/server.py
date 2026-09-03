@@ -1,35 +1,28 @@
-"""
-FleetMind — FastAPI Server
-
-HTTP REST + WebSocket server for the fleet dashboard.
-
-WebSocket protocol:
-  Server → Client (per tick):   full simulation state JSON
-  Client → Server (commands):   JSON action messages
-
-REST endpoints:
-  GET  /api/scenarios          list available scenarios
-  GET  /api/state              current state snapshot
-  POST /api/benchmark          run benchmark and return results
-"""
-
 from __future__ import annotations
 
 import asyncio
 import json
 import os
-import sys
-from typing import Dict, List, Set
+from typing import List, Optional, Set
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from engine import SimulationEngine
+from models import Message, MessageType, Position, RobotStatus
 from scenarios import get_scenario, list_scenarios, SCENARIOS
 from benchmark import run_benchmark
 
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  GLOBALS
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+engine = SimulationEngine()
+clients: Set[WebSocket] = set()
+_sim_task: Optional[asyncio.Task] = None
+_benchmark_result: Optional[dict] = None
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #  APP
@@ -44,10 +37,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-engine = SimulationEngine()
-clients: Set[WebSocket] = set()
-_sim_task: asyncio.Task | None = None
-_benchmark_result: dict | None = None
+@app.on_event("startup")
+async def on_startup():
+    global _sim_task
+    # Load default scenario
+    cfg = get_scenario("01_OPEN_WAREHOUSE")
+    if cfg:
+        engine.load_scenario(cfg)
+    # Start simulation loop
+    _sim_task = asyncio.create_task(simulation_loop())
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -84,7 +82,6 @@ def api_benchmark(req: BenchmarkRequest):
 def api_fail_robot(robot_id: str):
     if robot_id in engine.robots:
         robot = engine.robots[robot_id]
-        from models import RobotStatus
         robot.status = RobotStatus.UNAVAILABLE
         robot.velocity = 0.0
         robot.moving = False
@@ -92,19 +89,35 @@ def api_fail_robot(robot_id: str):
         return {"status": "success", "robot_id": robot_id}
     return {"status": "error", "message": "Robot not found"}
 
+
+@app.post("/api/recover_robot/{robot_id}")
+def api_recover_robot(robot_id: str):
+    if robot_id in engine.robots:
+        engine.recover_robot(robot_id)
+        return {"status": "success", "robot_id": robot_id}
+    return {"status": "error", "message": "Robot not found"}
+
+
+@app.get("/api/comm_graph")
+def api_comm_graph():
+    return {
+        "recent_edges": engine.message_bus.get_comm_graph(
+            recent_ticks=20, current_tick=engine.tick
+        ),
+        "summary": engine.message_bus.get_comm_summary(),
+    }
+
 class ObstacleRequest(BaseModel):
     x: int
     y: int
 
 @app.post("/api/add_obstacle")
 def api_add_obstacle(req: ObstacleRequest):
-    from models import Position
     pos = Position(req.x, req.y)
     engine.warehouse.add_obstacle(pos)
     engine._log_event("SYSTEM", None, f"Dynamic obstacle added at ({req.x}, {req.y})")
     
     # Alert all robots
-    from models import Message, MessageType
     engine.message_bus.send(
         Message(
             type=MessageType.OBSTACLE_ALERT,
@@ -124,9 +137,18 @@ async def simulation_loop():
     """Run the simulation and broadcast state to all WebSocket clients."""
     while True:
         if engine.running:
-            engine.step()
-            state = engine.get_state()
-            state_json = json.dumps(state)
+            try:
+                await engine.step()
+                state = engine.get_state(include_warehouse=False)
+                state_json = json.dumps(state)
+            except Exception:
+                import traceback
+                with open("traceback.txt", "w") as f:
+                    traceback.print_exc(file=f)
+                traceback.print_exc()
+                engine.running = False
+                await asyncio.sleep(1)
+                continue
 
             # Broadcast to all connected clients
             dead: List[WebSocket] = []
@@ -178,7 +200,7 @@ async def websocket_endpoint(ws: WebSocket):
                 cfg = get_scenario(scenario_id)
                 if cfg:
                     engine.load_scenario(cfg, baseline=baseline)
-                    await _broadcast_state()
+                    await _broadcast_state(include_warehouse=True)
 
             elif action == "play":
                 engine.running = True
@@ -190,13 +212,13 @@ async def websocket_endpoint(ws: WebSocket):
 
             elif action == "step":
                 engine.running = False
-                engine.step()
+                await engine.step()
                 await _broadcast_state()
 
             elif action == "reset":
                 engine.reset()
                 _benchmark_result = None
-                await _broadcast_state()
+                await _broadcast_state(include_warehouse=True)
 
             elif action == "set_speed":
                 engine.speed = float(cmd.get("speed", 1.0))
@@ -221,6 +243,16 @@ async def websocket_endpoint(ws: WebSocket):
                 engine.recover_robot(robot_id)
                 await _broadcast_state()
 
+            elif action == "inject_latency":
+                val = int(cmd.get("value", 1))
+                engine.message_bus.base_latency_ticks = val
+                await _broadcast_state()
+
+            elif action == "drop_packets":
+                val = float(cmd.get("value", 0.05))
+                engine.message_bus.packet_drop_prob = val
+                await _broadcast_state()
+
             elif action == "run_benchmark":
                 scenario_id = cmd.get("scenario", "10_BENCHMARK")
                 # Run benchmark in a separate thread to prevent blocking the event loop
@@ -236,7 +268,7 @@ async def websocket_endpoint(ws: WebSocket):
                 if cfg:
                     engine.load_scenario(cfg)
                     engine.running = True
-                    await _broadcast_state()
+                    await _broadcast_state(include_warehouse=True)
 
     except (WebSocketDisconnect, RuntimeError):
         pass
@@ -244,9 +276,9 @@ async def websocket_endpoint(ws: WebSocket):
         clients.discard(ws)
 
 
-async def _broadcast_state():
+async def _broadcast_state(include_warehouse: bool = False):
     """Send current state to all connected clients."""
-    state = json.dumps(engine.get_state())
+    state = json.dumps(engine.get_state(include_warehouse=include_warehouse))
     dead = []
     for ws in clients:
         try:
@@ -255,21 +287,6 @@ async def _broadcast_state():
             dead.append(ws)
     for ws in dead:
         clients.discard(ws)
-
-
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-#  STARTUP
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-@app.on_event("startup")
-async def on_startup():
-    global _sim_task
-    # Load default scenario
-    cfg = get_scenario("01_OPEN_WAREHOUSE")
-    if cfg:
-        engine.load_scenario(cfg)
-    # Start simulation loop
-    _sim_task = asyncio.create_task(simulation_loop())
 
 
 # ── Run directly ─────────────────────────────────────────

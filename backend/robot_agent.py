@@ -55,6 +55,8 @@ from deadlock_detector import DeadlockDetector
 from task_manager import estimate_task_cost
 
 
+from network_interface import NetworkInterface
+
 class RobotAgent:
     """
     Autonomous robot agent with local decision-making.
@@ -70,16 +72,15 @@ class RobotAgent:
         start_position: Position,
         color: str,
         warehouse,              # Warehouse instance (read-only grid/graph)
-        message_bus,            # MessageBus instance (send/receive)
+        message_bus: NetworkInterface, # Network abstraction
         task_pool,              # TaskPool instance (shared board)
-        space_time_grid: SpaceTimeGrid, # Global reservation ledger
     ):
         self.robot_id = robot_id
         self.color = color
         self.warehouse = warehouse
         self.message_bus = message_bus
         self.task_pool = task_pool
-        self.space_time_grid = space_time_grid
+        self.space_time_grid = SpaceTimeGrid()
 
         # ── position & movement ──────────────────────────
         self.position: Position = start_position
@@ -105,6 +106,12 @@ class RobotAgent:
         self.has_item: bool = False
         self.action_timer: int = 0        # countdown for pick/drop
         self.task_phase: str = "NONE"     # NONE / TO_PICKUP / PICKING / TO_DROPOFF / DROPPING
+        
+        # ── decentralized bidding ────────────────────────
+        # task_id -> {robot_id -> bid_cost}
+        self.active_auctions: Dict[str, Dict[str, float]] = {}
+        # task_id -> tick_started
+        self.auction_start_ticks: Dict[str, int] = {}
 
         # ── path ─────────────────────────────────────────
         self.planned_path: List[Position] = []
@@ -135,23 +142,27 @@ class RobotAgent:
             "thermal": 40.0 # C
         }
 
-        # ── event output ─────────────────────────────────
+        # ── event output ─────────────────────────────────────
         self.events: List[SimulationEvent] = []
 
-        # ── initial setup ────────────────────────────────
+        # ── communication counters ────────────────────────
+        self.messages_sent: int = 0
+        self.messages_received: int = 0
+
+        # ── initial setup ────────────────────────────────────
         self.message_bus.register(self.robot_id)
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     #  MAIN TICK
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-    def tick(
+    async def tick_async(
         self,
         current_tick: int,
         occupied_cells: Optional[Dict[Position, str]] = None,
     ):
         """
-        Execute one local decision cycle.
+        Execute one local decision cycle (asynchronous).
 
         Parameters
         ----------
@@ -197,7 +208,9 @@ class RobotAgent:
             self._continue_action(current_tick)
             return
 
-        # 7 ── task acquisition ───────────────────────────
+        # 7 ── task acquisition & bidding ─────────────────
+        self._resolve_auctions(current_tick)
+        
         if self.current_task is None:
             self.status = RobotStatus.IDLE
             self.velocity = 0.0
@@ -218,6 +231,7 @@ class RobotAgent:
 
     def _process_messages(self, tick: int):
         messages = self.message_bus.receive(self.robot_id)
+        self.messages_received += len(messages)
         for msg in messages:
             if not msg.validate():
                 continue
@@ -240,6 +254,8 @@ class RobotAgent:
             self._on_obstacle_alert(msg, tick)
         elif t == MessageType.TASK_OFFER:
             self._on_task_offer(msg, tick)
+        elif t == MessageType.TASK_BID:
+            self._on_task_bid(msg, tick)
         elif t == MessageType.TASK_AWARD:
             self._on_task_award(msg, tick)
         elif t == MessageType.PRIORITY_CLAIM:
@@ -248,6 +264,33 @@ class RobotAgent:
             self._on_deadlock_notification(msg, tick)
         elif t == MessageType.WAIT_FOR:
             self._on_wait_for(msg, tick)
+        elif t == MessageType.PATH_INTENT:
+            self._on_path_intent(msg, tick)
+
+    def _on_task_bid(self, msg: Message, tick: int):
+        task_id = msg.data.get("task_id")
+        cost = msg.data.get("cost")
+        if not task_id or cost is None: return
+        
+        # If we aren't tracking this auction, initialize it (we might have missed the OFFER)
+        if task_id not in self.active_auctions:
+            self.active_auctions[task_id] = {}
+            self.auction_start_ticks[task_id] = tick
+            
+        self.active_auctions[task_id][msg.sender_id] = cost
+
+    def _on_path_intent(self, msg: Message, tick: int):
+        path_tuples = msg.data.get("path", [])
+        if not path_tuples:
+            return
+            
+        path = [Position(x, y) for x, y in path_tuples]
+        
+        # Clear old intent from this robot
+        self.space_time_grid.clear_robot_reservations(msg.sender_id)
+        
+        # Reserve new intent starting from the timestamp the message was sent
+        self.space_time_grid.reserve_path(msg.sender_id, msg.timestamp, path)
 
     def _on_state_update(self, msg: Message, tick: int):
         d = msg.data
@@ -277,6 +320,7 @@ class RobotAgent:
         if "priority" in d: pk.priority = d["priority"]
         if "waiting_for" in d: pk.waiting_for = d["waiting_for"]
         if "destination" in d: pk.destination = dest
+        if "battery" in d: pk.battery = d["battery"]
         pk.last_update_tick = tick
 
         # Update deadlock detector
@@ -342,28 +386,40 @@ class RobotAgent:
         cost = dist - (20.0 * priority)
         if self.battery < 20.0: cost += 100.0
 
+        # Start tracking the auction locally
+        if task_id not in self.active_auctions:
+            self.active_auctions[task_id] = {}
+            self.auction_start_ticks[task_id] = tick
+        
+        self.active_auctions[task_id][self.robot_id] = cost
+
+        # Broadcast bid to peers
         bid = Message(
             sender_id=self.robot_id,
-            target_id="SYSTEM",
+            target_id=None,  # Broadcast
             type=MessageType.TASK_BID,
-            payload={"task_id": task_id, "cost": cost}
+            timestamp=tick,
+            data={"task_id": task_id, "cost": cost}
         )
         self.message_bus.send(bid)
 
     def _on_task_award(self, msg: Message, tick: int):
-        if msg.target_id != self.robot_id:
-            return
         task_id = msg.data.get("task_id")
-        if task_id and self.current_task is None:
-            task = self.task_pool.get_task(task_id)
-            if task and task.status == TaskStatus.PENDING:
-                self.current_task = task
-                self.task_pool.assign_task(task_id, self.robot_id, tick)
-                self.task_phase = "TO_PICKUP"
-                self.destination = task.pickup
-                self.priority = task.priority
-                self.planned_path.clear()
-                self._log_event(tick, "TASK", f"Awarded {task_id}: pickup={task.pickup.to_tuple()} → dropoff={task.dropoff.to_tuple()}")
+        winner_id = msg.data.get("winner_id")
+        if not task_id or not winner_id:
+            return
+            
+        # Clean up local auction tracking
+        self.active_auctions.pop(task_id, None)
+        self.auction_start_ticks.pop(task_id, None)
+        
+        # If we thought we were bidding on this, but someone else won, log it.
+        # (Though we shouldn't have won if our _resolve_auctions math is deterministic, 
+        # but network latency could cause split brain, which is fine, the pool enforces safety).
+        if winner_id != self.robot_id and self.current_task and self.current_task.task_id == task_id:
+            self.current_task = None
+            self.task_phase = "NONE"
+            self._log_event(tick, "TASK", f"Lost task {task_id} to {winner_id} due to network split-brain")
 
     def _on_priority_claim(self, msg: Message, tick: int):
         # Peer claims priority — check if we should yield
@@ -413,12 +469,82 @@ class RobotAgent:
             self.battery = max(0.0, self.battery - BATTERY_DRAIN_IDLE)
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    #  TASK ACQUISITION
+    #  TASK ACQUISITION & BIDDING
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+    def _resolve_auctions(self, tick: int):
+        AUCTION_DURATION = 15
+        
+        for task_id, start_tick in list(self.auction_start_ticks.items()):
+            if tick - start_tick >= AUCTION_DURATION:
+                # Auction closed. Determine the winner locally.
+                bids = self.active_auctions.get(task_id, {})
+                
+                # Winner is the one with the lowest cost. Tie-break by robot_id string sorting.
+                if bids:
+                    winner_id = min(bids.keys(), key=lambda rid: (bids[rid], rid))
+                    
+                    if winner_id == self.robot_id:
+                        # I won the auction!
+                        task = self.task_pool.get_task(task_id)
+                        if task and task.status == TaskStatus.PENDING:
+                            # Update the global pool to prevent others from starting new auctions
+                            self.task_pool.assign_task(task_id, self.robot_id, tick)
+                            
+                            self.current_task = task
+                            self.task_phase = "TO_PICKUP"
+                            self.destination = task.pickup
+                            self.priority = task.priority
+                            self.planned_path.clear()
+                            
+                            self._log_event(tick, "TASK", f"Won auction for {task_id} with bid {bids[self.robot_id]:.1f}")
+                            
+                            # Broadcast award so peers can delete their auctions
+                            self._broadcast_task_award(task_id, tick)
+                
+                # Cleanup local tracking
+                self.active_auctions.pop(task_id, None)
+                self.auction_start_ticks.pop(task_id, None)
+
+    def _broadcast_task_award(self, task_id: str, tick: int):
+        self.message_bus.send(Message(
+            type=MessageType.TASK_AWARD,
+            sender_id=self.robot_id,
+            target_id=None, # Broadcast to everyone
+            timestamp=tick,
+            data={"task_id": task_id, "winner_id": self.robot_id}
+        ))
+
     def _try_acquire_task(self, tick: int):
-        """Task acquisition is now handled asynchronously via TASK_OFFER and TASK_BID."""
-        pass
+        """Task Gossip: Idle robots occasionally check the 'environment' for tasks."""
+        if self.battery < BATTERY_CRITICAL or self.status == RobotStatus.UNAVAILABLE:
+            return
+            
+        # Only check every 10 ticks to avoid spamming
+        if tick % 10 != 0:
+            return
+            
+        # Find a PENDING task that isn't currently being auctioned
+        for task_id, task in self.task_pool.tasks.items():
+            if task.status == TaskStatus.PENDING and task_id not in self.active_auctions:
+                # Discovered a task! Broadcast it.
+                self._broadcast_task_offer(task_id, task, tick)
+                # Note: We don't bid immediately, we wait for our own broadcast to hit _on_task_offer
+                break
+
+    def _broadcast_task_offer(self, task_id: str, task: Task, tick: int):
+        self.message_bus.send(Message(
+            type=MessageType.TASK_OFFER,
+            sender_id=self.robot_id,
+            timestamp=tick,
+            data={
+                "task_id": task_id,
+                "pickup": {"x": task.pickup.x, "y": task.pickup.y},
+                "dropoff": {"x": task.dropoff.x, "y": task.dropoff.y},
+                "priority": task.priority,
+            }
+        ))
+        self._log_event(tick, "TASK", f"Discovered and gossiped task {task_id}")
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     #  TASK EXECUTION STATE MACHINE
@@ -561,6 +687,7 @@ class RobotAgent:
                 self.space_time_grid.reserve_path(self.robot_id, tick, path)
                 self.intent = f"PATH_TO_{self.destination.to_tuple()}"
                 self._broadcast_intent(tick)
+                self._broadcast_path_intent(tick)
             else:
                 self.planned_path = []
 
@@ -592,19 +719,23 @@ class RobotAgent:
 
         # ── DISTRIBUTED conflict resolution ──────────────
         peer_wt = 0
+        peer_batt = 100.0
         if other_id in self.peer_knowledge:
             pk = self.peer_knowledge[other_id]
             peer_wt = 0  # we don't know their exact waiting time locally
+            peer_batt = pk.battery
 
         priority_cmp = compare_priority(
             self.priority,
             conflict.my_distance,
             self.waiting_time,
             self.robot_id,
+            self.battery,
             conflict.peer_priority,
             conflict.peer_distance,
             peer_wt,
             other_id,
+            peer_batt,
         )
 
         if priority_cmp > 0:
@@ -811,6 +942,7 @@ class RobotAgent:
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
     def _broadcast_state(self, tick: int):
+        self.messages_sent += 1
         self.message_bus.send(Message(
             type=MessageType.STATE_UPDATE,
             sender_id=self.robot_id,
@@ -831,6 +963,7 @@ class RobotAgent:
         ))
 
     def _broadcast_intent(self, tick: int):
+        self.messages_sent += 1
         self.message_bus.send(Message(
             type=MessageType.INTENT_BROADCAST,
             sender_id=self.robot_id,
@@ -842,6 +975,18 @@ class RobotAgent:
                 "priority": self.priority,
                 "intent": self.intent,
                 "status": self.status.value,
+            },
+        ))
+
+    def _broadcast_path_intent(self, tick: int):
+        """Broadcast the full planned path so peers can update their local Space-Time Grids."""
+        self.messages_sent += 1
+        self.message_bus.send(Message(
+            type=MessageType.PATH_INTENT,
+            sender_id=self.robot_id,
+            timestamp=tick,
+            data={
+                "path": [p.to_tuple() for p in self.planned_path],
             },
         ))
 
@@ -922,7 +1067,15 @@ class RobotAgent:
             "decision_reason": self.decision_reason,
             "moving": self.moving,
             "move_progress": self.move_progress,
-            "hardware": self.hardware,
+            "has_item": self.has_item,
+            "messages_sent": self.messages_sent,
+            "messages_received": self.messages_received,
+            "hardware": {
+                "cpu": round(self.hardware["cpu"], 1),
+                "ram": round(self.hardware["ram"], 1),
+                "latency": round(self.hardware["latency"], 1),
+                "thermal": round(self.hardware["thermal"], 1),
+            },
         }
 
     def reset(self, position: Position):

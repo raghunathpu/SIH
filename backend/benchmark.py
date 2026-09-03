@@ -129,9 +129,13 @@ def _run_scenario(
 
     t0 = time.perf_counter()
 
-    while engine.running:
-        if not engine.step():
-            break
+    import asyncio
+    async def run_sim():
+        while engine.running:
+            if not await engine.step():
+                break
+    
+    asyncio.run(run_sim())
 
     wall_ms = (time.perf_counter() - t0) * 1000
     m = engine.metrics

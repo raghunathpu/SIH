@@ -77,6 +77,7 @@ class MessageType(Enum):
     DEADLOCK_DETECTED = "DEADLOCK_DETECTED"
     REROUTE_NOTIFICATION = "REROUTE_NOTIFICATION"
     WAIT_FOR = "WAIT_FOR"
+    PATH_INTENT = "PATH_INTENT"
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -138,6 +139,7 @@ class Message:
     timestamp: int          # simulation tick when the message was created
     data: Dict[str, Any] = field(default_factory=dict)
     target_id: Optional[str] = None
+    sequence: int = 0
 
     def validate(self) -> bool:
         """Basic structural validation.  Returns False for malformed messages."""
@@ -300,6 +302,7 @@ class PeerKnowledge:
     last_update_tick: int = 0
     waiting_for: Optional[str] = None
     destination: Optional[Position] = None
+    battery: float = 100.0
 
     def is_stale(self, current_tick: int, max_age: int = 30) -> bool:
         return (current_tick - self.last_update_tick) > max_age

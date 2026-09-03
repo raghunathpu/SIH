@@ -128,37 +128,37 @@ def compare_priority(
     my_distance: int,
     my_waiting_time: int,
     my_id: str,
+    my_battery: float,
     peer_task_priority: int,
     peer_distance: int,
     peer_waiting_time: int,
     peer_id: str,
+    peer_battery: float,
 ) -> int:
     """
-    Compare two robots' priority.
-
-    Returns
-    -------
-    +1  if *my* priority is higher (I should proceed)
-    -1  if *peer* priority is higher (I should yield)
-     0  if exactly equal (should not happen with id tiebreak)
+    Compare two robots' priority using a unified dynamic score.
+    Higher score wins.
     """
-    # 1. Task priority (higher wins)
-    if my_task_priority != peer_task_priority:
-        return 1 if my_task_priority > peer_task_priority else -1
+    def calculate_score(task_prio, dist, wait, batt):
+        # Base task priority (0-100)
+        score = float(task_prio * 10)
+        # Closer distance = higher priority (+5 per cell closer, assuming max dist ~50)
+        score += max(0, (50 - dist) * 0.5)
+        # Waiting time = higher priority (starvation prevention, +2 per tick waited)
+        score += wait * 2.0
+        # Low battery penalty (if below 20%, drop priority to let others move so we can charge)
+        if batt < 20.0:
+            score -= 50.0
+        return score
 
-    # 2. Distance to conflict cell (closer wins — already committed)
-    if my_distance != peer_distance:
-        return 1 if my_distance < peer_distance else -1
+    my_score = calculate_score(my_task_priority, my_distance, my_waiting_time, my_battery)
+    peer_score = calculate_score(peer_task_priority, peer_distance, peer_waiting_time, peer_battery)
 
-    # 3. Waiting time (more waiting = higher priority, fairness)
-    if my_waiting_time != peer_waiting_time:
-        return 1 if my_waiting_time > peer_waiting_time else -1
+    if my_score != peer_score:
+        return 1 if my_score > peer_score else -1
 
-    # 4. Robot ID tiebreak (lower ID wins — deterministic)
-    if my_id != peer_id:
-        return 1 if my_id < peer_id else -1
-
-    return 0
+    # Deterministic tiebreak
+    return 1 if my_id < peer_id else -1
 
 
 def should_reroute_vs_wait(

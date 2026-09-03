@@ -19,6 +19,7 @@ The engine only:
 
 from __future__ import annotations
 
+import asyncio
 import random
 from typing import Callable, Dict, List, Optional, Set
 
@@ -34,7 +35,7 @@ from models import (
     TaskStatus,
 )
 from warehouse import Warehouse
-from message_bus import MessageBus
+from message_bus import SimulatedNetwork
 from robot_agent import RobotAgent
 from task_manager import TaskPool, TaskBroker
 from scenarios import ScenarioConfig, make_tasks
@@ -56,10 +57,8 @@ class SimulationEngine:
 
     def __init__(self):
         self.warehouse: Warehouse = Warehouse()
-        self.message_bus: MessageBus = MessageBus()
+        self.message_bus: SimulatedNetwork = SimulatedNetwork()
         self.task_pool: TaskPool = TaskPool()
-        self.task_broker: TaskBroker = TaskBroker(self.task_pool, self.message_bus)
-        self.space_time_grid: SpaceTimeGrid = SpaceTimeGrid()
 
         self.robots: Dict[str, RobotAgent] = {}
         self.tick: int = 0
@@ -124,7 +123,6 @@ class SimulationEngine:
                 warehouse=self.warehouse,
                 message_bus=self.message_bus,
                 task_pool=self.task_pool,
-                space_time_grid=self.space_time_grid,
             )
             agent.baseline_mode = self.baseline_mode
             self.robots[robot_id] = agent
@@ -141,13 +139,16 @@ class SimulationEngine:
     #  TICK
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-    def step(self) -> bool:
+    async def step(self) -> bool:
         """
         Advance simulation by one tick.
         Returns False if the simulation should stop.
         """
+        # ── network step ─────────────────────────────────
+        self.message_bus.step(self.tick, self.robots)
+
         # ── task broker ──────────────────────────────────
-        self.task_broker.tick(self.tick)
+        # (Task allocation is now decentralized)
 
         # ── failover detection ───────────────────────────
         for robot in self.robots.values():
@@ -160,34 +161,29 @@ class SimulationEngine:
         # ── timed events ─────────────────────────────────
         self._apply_timed_events()
 
-        # ── robot decision cycles ────────────────────────
-        robot_list = list(self.robots.values())
-        random.shuffle(robot_list)  # randomise processing order
-
+        # ── robot decision cycles (ASYNCHRONOUS) ─────────
         # Build currently occupied cells mapping
         occupied_cells = {r.position: r.robot_id for r in self.robots.values() if r.status != RobotStatus.UNAVAILABLE}
 
-        for robot in robot_list:
-            robot.tick(self.tick, occupied_cells=occupied_cells)
+        # Run all robot ticks concurrently!
+        await asyncio.gather(*(
+            robot.tick_async(self.tick, occupied_cells=occupied_cells)
+            for robot in self.robots.values()
+        ))
 
-            # Update occupied cells with the new position of this robot immediately
+        # Collect robot events (they are pushed to lists synchronously inside async methods, which is safe in python asyncio)
+        for robot in self.robots.values():
             if robot.status != RobotStatus.UNAVAILABLE:
-                # Remove old positions occupied by this robot
-                for pos, rid in list(occupied_cells.items()):
-                    if rid == robot.robot_id:
-                        del occupied_cells[pos]
-                occupied_cells[robot.position] = robot.robot_id
-            # Collect robot events
-            for ev in robot.events:
-                self.events.append(ev)
-                if ev.event_type == "NEGOTIATION":
-                    self.metrics.conflicts_resolved += 1
-                elif ev.event_type == "REROUTE":
-                    self.metrics.reroutes += 1
-                elif ev.event_type == "DEADLOCK":
-                    self.metrics.deadlocks_detected += 1
-                elif ev.event_type == "TASK" and "reassign" in ev.description.lower():
-                    self.metrics.task_reassignments += 1
+                for ev in robot.events:
+                    self.events.append(ev)
+                    if ev.event_type == "NEGOTIATION":
+                        self.metrics.conflicts_resolved += 1
+                    elif ev.event_type == "REROUTE":
+                        self.metrics.reroutes += 1
+                    elif ev.event_type == "DEADLOCK":
+                        self.metrics.deadlocks_detected += 1
+                    elif ev.event_type == "TASK" and "reassign" in ev.description.lower():
+                        self.metrics.task_reassignments += 1
 
         # ── collision detection ──────────────────────────
         self._check_collisions()
@@ -418,9 +414,9 @@ class SimulationEngine:
     #  STATE SERIALISATION
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-    def get_state(self) -> dict:
+    def get_state(self, include_warehouse: bool = True) -> dict:
         """Full simulation state for the frontend."""
-        return {
+        state = {
             "tick": self.tick,
             "running": self.running,
             "speed": self.speed,
@@ -429,7 +425,13 @@ class SimulationEngine:
             "scenario_name": self._scenario.name if self._scenario else None,
             "robots": {rid: r.to_dict() for rid, r in self.robots.items()},
             "tasks": [t.to_dict() for t in self.task_pool.get_all_tasks()],
-            "warehouse": self.warehouse.to_dict(),
             "metrics": self.metrics.to_dict(),
             "events": [e.to_dict() for e in self.events[-100:]],
+            "comm_graph": self.message_bus.get_comm_graph(
+                recent_ticks=15, current_tick=self.tick
+            ),
+            "comm_summary": self.message_bus.get_comm_summary(),
         }
+        if include_warehouse:
+            state["warehouse"] = self.warehouse.to_dict()
+        return state
