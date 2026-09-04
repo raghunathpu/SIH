@@ -17,9 +17,17 @@ export const LiveEventFeed: React.FC<Props> = ({ state }) => {
 
   if (!state) return null;
 
-  const events = state.events.slice(-50); // Show last 50 events
+  // Show last 60 events; de-duplicate back-to-back COLLISION_PREDICTION for same pair
+  const rawEvents = state.events.slice(-80);
+  const events = rawEvents.filter((ev, i) => {
+    if (ev.event_type !== 'COLLISION_PREDICTION') return true;
+    // Suppress if the previous event was the same type + same robot
+    const prev = rawEvents[i - 1];
+    return !(prev && prev.event_type === 'COLLISION_PREDICTION' && prev.robot_id === ev.robot_id);
+  }).slice(-50);
 
   const getEventColor = (type: string) => {
+    if (type === 'COLLISION_PREDICTION') return 'text-orange-300 border-orange-500 bg-orange-500/15';
     if (type.includes('TASK')) return 'text-emerald-400 border-emerald-500/30 bg-emerald-500/10';
     if (type === 'NEGOTIATION') return 'text-amber-400 border-amber-500/30 bg-amber-500/10';
     if (type === 'OBSTACLE' || type === 'DEADLOCK' || type === 'COLLISION') return 'text-rose-400 border-rose-500/30 bg-rose-500/10';
@@ -28,6 +36,7 @@ export const LiveEventFeed: React.FC<Props> = ({ state }) => {
   };
 
   const getEventIcon = (type: string) => {
+    if (type === 'COLLISION_PREDICTION') return '📡';
     if (type.includes('TASK')) return '📦';
     if (type === 'NEGOTIATION') return '🤝';
     if (type === 'OBSTACLE') return '🚧';

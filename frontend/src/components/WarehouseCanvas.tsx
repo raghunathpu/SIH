@@ -313,6 +313,76 @@ export default function WarehouseCanvas({ state, selectedRobot, onSelectRobot, o
         drawRobot(ctx, r, baseCellW, baseCellH, r.robot_id === selectedRobot);
       }
 
+      // ── Collision Prediction Overlays ──
+      // Drawn on top of robots so the warning is always visible.
+      const robotsMap = state.robots;
+      for (const r of robots) {
+        if (r.status === 'UNAVAILABLE') continue;
+        const risk = r.collision_risk ?? 'SAFE';
+        if (risk === 'SAFE') continue;
+
+        const cx = r.render_x * baseCellW + baseCellW / 2;
+        const cy = r.render_y * baseCellH + baseCellH / 2;
+        const radius = Math.min(baseCellW, baseCellH) * 0.4;
+
+        const isCritical = risk === 'CRITICAL';
+        const ringColor = isCritical ? '#ef4444' : '#f59e0b';
+        const pulseSpeed = isCritical ? 8 : 4;
+        const pulse = (Math.sin(time * pulseSpeed) + 1) / 2; // 0–1
+
+        // Outer danger ring — expands outward as pulse increases
+        ctx.beginPath();
+        ctx.arc(cx, cy, radius * (1.5 + pulse * 0.8), 0, Math.PI * 2);
+        ctx.strokeStyle = ringColor + (isCritical ? 'cc' : '99');
+        ctx.lineWidth = isCritical ? 2.5 : 1.5;
+        ctx.shadowColor = ringColor;
+        ctx.shadowBlur = 10 + pulse * 10;
+        ctx.stroke();
+        ctx.shadowBlur = 0;
+
+        // Second inner fading ring
+        ctx.beginPath();
+        ctx.arc(cx, cy, radius * (1.1 + pulse * 0.5), 0, Math.PI * 2);
+        ctx.strokeStyle = ringColor + Math.round((0.3 + 0.4 * (1 - pulse)) * 255).toString(16).padStart(2, '0');
+        ctx.lineWidth = 1;
+        ctx.stroke();
+
+        // TTC badge above the robot
+        const ttc = r.collision_ttc;
+        const label = isCritical
+          ? (ttc !== null ? `⚠ ${ttc.toFixed(1)}s` : '⚠ CRIT')
+          : (ttc !== null ? `⚡ ${ttc.toFixed(1)}s` : '⚡ WARN');
+        const fontSize = Math.max(9, radius * 0.65);
+        ctx.font = `bold ${fontSize}px 'JetBrains Mono', monospace`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'bottom';
+        // Background pill
+        const tw = ctx.measureText(label).width + 6;
+        const th = fontSize + 4;
+        const tx = cx - tw / 2;
+        const ty = cy - radius * 1.9 - th;
+        ctx.fillStyle = isCritical ? 'rgba(239,68,68,0.85)' : 'rgba(245,158,11,0.85)';
+        ctx.beginPath();
+        ctx.roundRect(tx, ty, tw, th, 3);
+        ctx.fill();
+        ctx.fillStyle = '#fff';
+        ctx.fillText(label, cx, cy - radius * 1.9);
+
+        // Hazard beam to the peer robot that we're predicted to collide with
+        const peerId = r.collision_peer;
+        if (peerId && robotsMap[peerId]) {
+          const peer = robotsMap[peerId];
+          drawCollisionBeam(
+            ctx,
+            cx, cy,
+            peer.render_x * baseCellW + baseCellW / 2,
+            peer.render_y * baseCellH + baseCellH / 2,
+            ringColor,
+            pulse,
+          );
+        }
+      }
+
       ctx.restore();
       animFrameRef.current = requestAnimationFrame(draw);
     };
@@ -509,4 +579,56 @@ function drawRobot(
       const label = robot.robot_id.replace('AMR-', '');
       ctx.fillText(label, cx, cy);
   }
+}
+
+/* ────────────────────────────────────────────────────────
+ *  COLLISION BEAM — animated threat line between two robots
+ * ──────────────────────────────────────────────────────── */
+function drawCollisionBeam(
+  ctx: CanvasRenderingContext2D,
+  x1: number,
+  y1: number,
+  x2: number,
+  y2: number,
+  color: string,
+  pulse: number,
+) {
+  // Gradient along the beam
+  const grad = ctx.createLinearGradient(x1, y1, x2, y2);
+  grad.addColorStop(0, color + 'cc');
+  grad.addColorStop(0.5, color + '55');
+  grad.addColorStop(1, color + 'cc');
+
+  ctx.beginPath();
+  ctx.moveTo(x1, y1);
+  ctx.lineTo(x2, y2);
+
+  ctx.shadowColor = color;
+  ctx.shadowBlur = 6 + pulse * 6;
+  ctx.strokeStyle = grad;
+  ctx.lineWidth = 1.5;
+
+  // Animated dash — marching ants toward midpoint
+  const dashLen = 8;
+  const gapLen = 6;
+  ctx.setLineDash([dashLen, gapLen]);
+  ctx.lineDashOffset = -(Date.now() / 60) % (dashLen + gapLen);
+  ctx.stroke();
+
+  ctx.setLineDash([]);
+  ctx.shadowBlur = 0;
+
+  // Midpoint X marker
+  const mx = (x1 + x2) / 2;
+  const my = (y1 + y2) / 2;
+  const s = 5 + pulse * 3;
+  ctx.beginPath();
+  ctx.moveTo(mx - s, my - s); ctx.lineTo(mx + s, my + s);
+  ctx.moveTo(mx + s, my - s); ctx.lineTo(mx - s, my + s);
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 2;
+  ctx.shadowColor = color;
+  ctx.shadowBlur = 8;
+  ctx.stroke();
+  ctx.shadowBlur = 0;
 }

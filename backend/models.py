@@ -402,6 +402,20 @@ BATTERY_DRAIN_IDLE = 0.005  # % per idle tick
 BATTERY_CRITICAL = 15.0     # % threshold for charging
 MAX_WAIT_BEFORE_REROUTE = 20  # ticks waiting before attempting reroute
 DEADLOCK_WAIT_THRESHOLD = 40  # ticks before considering deadlock
+
+# ── Predictive Collision Detection ───────────────────────────────────────────
+# One cell-move takes TICKS_PER_MOVE ticks; we treat that as 1 second of
+# simulated time so that TTC figures are human-readable.
+TICKS_PER_SECOND: int = 4           # simulation ticks that equal one second
+ROBOT_RADIUS: float = 0.3           # robot body radius in grid-cell units
+SAFETY_MARGIN: float = 0.5          # extra clearance on top of combined radii
+# UNSAFE_DISTANCE = ROBOT_RADIUS * 2 + SAFETY_MARGIN  ≈ 1.1 cells
+# Horizon over which trajectories are projected for collision prediction.
+PREDICTION_HORIZON_TICKS: int = 20  # ticks (~5 s at default speed)
+# Only evaluate peers within this euclidean distance (cells).
+# Keeps the inner loop O(nearby), not O(all robots).
+DETECTION_RADIUS: float = 12.0      # cells
+
 ROBOT_COLORS = [
     "#00B8D4",  # cyan
     "#FF6D00",  # orange

@@ -17,51 +17,82 @@ class SpaceTimeGrid:
     Keys are (tick, Position), values are robot_id.
     """
     def __init__(self):
-        self.reservations: Dict[Tuple[int, Position], str] = {}
+        self.reservations: Dict[Tuple[int, Position], Set[str]] = {}
         # Track the last reserved tick for each cell to prevent robots from
         # planning over a cell that another robot will rest on indefinitely.
-        self.terminal_reservations: Dict[Position, Tuple[int, str]] = {}
+        self.terminal_reservations: Dict[Position, Set[Tuple[int, str]]] = {}
 
     def reserve(self, robot_id: str, tick: int, position: Position):
-        self.reservations[(tick, position)] = robot_id
+        key = (tick, position)
+        if key not in self.reservations:
+            self.reservations[key] = set()
+        self.reservations[key].add(robot_id)
 
     def reserve_path(self, robot_id: str, start_tick: int, path: List[Position]):
         """Reserves a sequence of positions starting from start_tick."""
-        for i, pos in enumerate(path):
-            t = start_tick + i
-            self.reserve(robot_id, t, pos)
+        from models import TICKS_PER_MOVE
+        
+        if not path:
+            return
+            
+        current_tick = start_tick
+        current_pos = path[0]
+        self.reserve(robot_id, current_tick, current_pos)
+        
+        for next_pos in path[1:]:
+            if next_pos == current_pos:
+                # Wait action takes 1 tick
+                current_tick += 1
+                self.reserve(robot_id, current_tick, current_pos)
+            else:
+                # Move action takes TICKS_PER_MOVE ticks
+                for _ in range(TICKS_PER_MOVE):
+                    current_tick += 1
+                    self.reserve(robot_id, current_tick, next_pos)
+                current_pos = next_pos
         
         # The robot will rest at the end of the path indefinitely (or until next plan)
-        if path:
-            self.terminal_reservations[path[-1]] = (start_tick + len(path) - 1, robot_id)
+        if path[-1] not in self.terminal_reservations:
+            self.terminal_reservations[path[-1]] = set()
+        self.terminal_reservations[path[-1]].add((current_tick, robot_id))
 
     def clear_robot_reservations(self, robot_id: str):
         """Remove all reservations for a specific robot."""
         # Clear specific tick reservations
-        keys_to_delete = [k for k, v in self.reservations.items() if v == robot_id]
-        for k in keys_to_delete:
+        empty_keys = []
+        for k, res_set in self.reservations.items():
+            if robot_id in res_set:
+                res_set.remove(robot_id)
+                if not res_set:
+                    empty_keys.append(k)
+        for k in empty_keys:
             del self.reservations[k]
             
         # Clear terminal reservations
-        term_keys = [k for k, v in self.terminal_reservations.items() if v[1] == robot_id]
-        for k in term_keys:
+        empty_term_keys = []
+        for pos, term_set in self.terminal_reservations.items():
+            items_to_remove = [item for item in term_set if item[1] == robot_id]
+            for item in items_to_remove:
+                term_set.remove(item)
+            if not term_set:
+                empty_term_keys.append(pos)
+        for k in empty_term_keys:
             del self.terminal_reservations[k]
 
     def is_reserved(self, tick: int, position: Position, exclude_robot: Optional[str] = None) -> bool:
         """Check if a cell is reserved at a specific tick."""
         # 1. Check exact tick reservation
-        if (tick, position) in self.reservations:
-            res_id = self.reservations[(tick, position)]
-            if res_id != exclude_robot:
-                return True
+        key = (tick, position)
+        if key in self.reservations:
+            for res_id in self.reservations[key]:
+                if res_id != exclude_robot:
+                    return True
         
         # 2. Check if a robot has stopped here indefinitely in the past
         if position in self.terminal_reservations:
-            term_tick, term_id = self.terminal_reservations[position]
-            if tick >= term_tick and term_id != exclude_robot:
-                # Unless this cell is explicitly reserved by someone else at exactly this tick?
-                # Actually if a robot rests here, no one else can pass.
-                return True
+            for term_tick, term_id in self.terminal_reservations[position]:
+                if tick >= term_tick and term_id != exclude_robot:
+                    return True
                 
         return False
 
@@ -71,10 +102,12 @@ class SpaceTimeGrid:
         would cause a swap (vertex collision) with another robot moving next_pos -> current_pos.
         """
         if (tick, next_pos) in self.reservations and (tick + 1, current_pos) in self.reservations:
-            r1 = self.reservations[(tick, next_pos)]
-            r2 = self.reservations[(tick + 1, current_pos)]
-            if r1 == r2 and r1 != exclude_robot:
-                return True
+            r1_set = self.reservations[(tick, next_pos)]
+            r2_set = self.reservations[(tick + 1, current_pos)]
+            # If any robot (other than exclude_robot) is in both sets, it's a swap conflict
+            for r_id in r1_set.intersection(r2_set):
+                if r_id != exclude_robot:
+                    return True
         return False
 
 
@@ -95,18 +128,26 @@ def astar_3d(
     if start == goal:
         return [start]
 
+    from models import TICKS_PER_MOVE
+
     _blocked = is_blocked or (lambda _: False)
 
     open_heap: list = []
     counter = 0
-    
+
     # Heap stores: (f_score, counter, tick, current_pos)
-    h0 = start.manhattan_distance(goal)
+    # NOTE: cost/heuristic are expressed in *ticks*, not action-count, so
+    # that A* actually minimizes real elapsed time (which is what the
+    # benchmark measures) rather than treating a 1-tick wait and a
+    # TICKS_PER_MOVE-tick move as equally "expensive". Scaling the
+    # heuristic by TICKS_PER_MOVE keeps it admissible/consistent under
+    # this cost model.
+    h0 = start.manhattan_distance(goal) * TICKS_PER_MOVE
     heapq.heappush(open_heap, (h0, counter, start_tick, start))
     counter += 1
 
-    # came_from maps (tick, pos) -> (tick-1, prev_pos)
-    came_from: dict[Tuple[int, Position], Position] = {}
+    # came_from maps (tick, pos) -> (prev_tick, prev_pos)
+    came_from: dict[Tuple[int, Position], Tuple[int, Position]] = {}
     
     # g_score maps (tick, pos) -> cost
     g_score: dict[Tuple[int, Position], int] = {(start_tick, start): 0}
@@ -124,8 +165,7 @@ def astar_3d(
             curr_state = (current_tick, current_pos)
             while curr_state in came_from:
                 path.append(curr_state[1])
-                prev_pos = came_from[curr_state]
-                curr_state = (curr_state[0] - 1, prev_pos)
+                curr_state = came_from[curr_state]
             path.append(start)
             path.reverse()
             return path
@@ -134,33 +174,41 @@ def astar_3d(
             continue
         closed.add((current_tick, current_pos))
 
-        next_tick = current_tick + 1
-        
         # 1. Wait action (stay in place)
         possible_moves = [current_pos] + get_neighbors(current_pos)
 
         for neighbor in possible_moves:
-            if (next_tick, neighbor) in closed:
-                continue
+            collision = False
             
-            # Check static obstacles
-            if _blocked(neighbor) and neighbor != current_pos:
-                continue
-
-            # Check Space-Time Grid for vertex collision
-            if grid.is_reserved(next_tick, neighbor, exclude_robot=robot_id):
-                continue
-
-            # Check Space-Time Grid for edge (swap) collision
-            if neighbor != current_pos:
-                if grid.is_swap_conflict(current_tick, current_pos, neighbor, exclude_robot=robot_id):
+            if neighbor == current_pos:
+                next_tick = current_tick + 1
+                if grid.is_reserved(next_tick, neighbor, exclude_robot=robot_id):
+                    collision = True
+            else:
+                next_tick = current_tick + TICKS_PER_MOVE
+                # Check static obstacles
+                if _blocked(neighbor) and neighbor != current_pos:
                     continue
+                    
+                # Check Space-Time Grid for vertex collision during the entire move
+                for t in range(current_tick + 1, next_tick + 1):
+                    if grid.is_reserved(t, neighbor, exclude_robot=robot_id):
+                        collision = True
+                        break
+                        
+                # Check Space-Time Grid for edge (swap) collision
+                if not collision:
+                    if grid.is_swap_conflict(current_tick, current_pos, neighbor, exclude_robot=robot_id):
+                        collision = True
 
-            tentative_g = g_score[(current_tick, current_pos)] + 1
+            if collision:
+                continue
+
+            tentative_g = g_score[(current_tick, current_pos)] + (next_tick - current_tick)
             if tentative_g < g_score.get((next_tick, neighbor), float("inf")):
-                came_from[(next_tick, neighbor)] = current_pos
+                came_from[(next_tick, neighbor)] = (current_tick, current_pos)
                 g_score[(next_tick, neighbor)] = tentative_g
-                f = tentative_g + neighbor.manhattan_distance(goal)
+                f = tentative_g + neighbor.manhattan_distance(goal) * TICKS_PER_MOVE
                 heapq.heappush(open_heap, (f, counter, next_tick, neighbor))
                 counter += 1
 

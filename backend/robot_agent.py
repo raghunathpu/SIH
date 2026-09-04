@@ -33,6 +33,7 @@ from models import (
     HEARTBEAT_TIMEOUT,
     MAX_WAIT_BEFORE_REROUTE,
     PICK_DROP_TICKS,
+    PREDICTION_HORIZON_TICKS,
     TICKS_PER_MOVE,
     Message,
     MessageType,
@@ -53,6 +54,7 @@ from conflict_resolver import (
 )
 from deadlock_detector import DeadlockDetector
 from task_manager import estimate_task_cost
+from collision_predictor import CollisionPredictor, CollisionPrediction, CollisionRisk
 
 
 from network_interface import NetworkInterface
@@ -74,13 +76,15 @@ class RobotAgent:
         warehouse,              # Warehouse instance (read-only grid/graph)
         message_bus: NetworkInterface, # Network abstraction
         task_pool,              # TaskPool instance (shared board)
+        space_time_grid: SpaceTimeGrid = None,  # Shared grid (engine-owned)
     ):
         self.robot_id = robot_id
         self.color = color
         self.warehouse = warehouse
         self.message_bus = message_bus
         self.task_pool = task_pool
-        self.space_time_grid = SpaceTimeGrid()
+        # Use shared grid if provided; fall back to private one only in unit tests
+        self.space_time_grid = space_time_grid if space_time_grid is not None else SpaceTimeGrid()
 
         # ── position & movement ──────────────────────────
         self.position: Position = start_position
@@ -124,6 +128,11 @@ class RobotAgent:
         self.waiting_for: Optional[str] = None
         self.waiting_time: int = 0
         self.total_waiting_time: int = 0
+        # Ticks spent BLOCKED (no path found at all) — tracked separately
+        # from waiting_time (occupied-cell / MAPF wait) so a robot that
+        # can't even compute a route also gets an escape hatch instead of
+        # sitting there forever holding a stale reservation.
+        self.blocked_time: int = 0
         self.decision_reason: str = ""
         self.intent: str = ""
         self.priority: int = 0
@@ -133,6 +142,11 @@ class RobotAgent:
 
         # ── mode ─────────────────────────────────────────
         self.baseline_mode: bool = False   # True = stop-and-wait
+
+        # ── predictive collision detection ───────────────────
+        self.collision_predictor = CollisionPredictor(robot_id)
+        # Predictions from the last tick that were non-SAFE (for to_dict / logging)
+        self.active_collision_predictions: List[CollisionPrediction] = []
 
         # ── hardware telemetry (simulated) ───────────────
         self.hardware = {
@@ -180,6 +194,11 @@ class RobotAgent:
 
         # 1 ── process inbox ──────────────────────────────
         self._process_messages(current_tick)
+
+        # 1b ── predictive collision detection ────────────
+        # Runs immediately after messages are processed so peer_knowledge
+        # is as fresh as possible before any movement decisions.
+        self._run_collision_prediction(current_tick)
 
         # 2 ── heartbeat ──────────────────────────────────
         if current_tick - self.last_heartbeat >= HEARTBEAT_INTERVAL:
@@ -469,6 +488,171 @@ class RobotAgent:
             self.battery = max(0.0, self.battery - BATTERY_DRAIN_IDLE)
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    #  PREDICTIVE COLLISION DETECTION
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    def _run_collision_prediction(self, tick: int):
+        """
+        Run the local predictive collision detector against all peers
+        within DETECTION_RADIUS.
+
+        Only uses self.render_x / render_y / planned_path / velocity and
+        self.peer_knowledge — no global state is accessed.
+
+        Side-effects:
+        * self.active_collision_predictions updated.
+        * WARNING / CRITICAL events appended to self.events (existing system).
+        """
+        if self.status == RobotStatus.UNAVAILABLE:
+            self.active_collision_predictions = []
+            return
+
+        predictions = self.collision_predictor.predict(
+            my_render_x    = self.render_x,
+            my_render_y    = self.render_y,
+            my_path        = self.planned_path,
+            my_velocity    = self.velocity,
+            peer_knowledge = self.peer_knowledge,
+            current_tick   = tick,
+        )
+
+        self.active_collision_predictions = predictions
+
+        # Log structured events for WARNING and CRITICAL predictions
+        for pred in predictions:
+            if pred.risk_level in (CollisionRisk.WARNING, CollisionRisk.CRITICAL):
+                ttc_str = (
+                    f"{pred.time_to_collision:.2f}s"
+                    if pred.time_to_collision is not None
+                    else "<1 tick"
+                )
+                pos_str = (
+                    str(pred.conflict_position.to_tuple())
+                    if pred.conflict_position else "unknown"
+                )
+                self._log_event(
+                    tick,
+                    "COLLISION_PREDICTION",
+                    f"{self.robot_id} detected predicted collision with "
+                    f"{pred.other_robot_id} | "
+                    f"TTC: {ttc_str} | "
+                    f"Min-sep: {pred.minimum_predicted_distance:.2f} cells | "
+                    f"Conflict pos: {pos_str} | "
+                    f"Risk: {pred.risk_level.value} | "
+                    f"Confidence: {pred.confidence:.2f}",
+                )
+
+                # Active avoidance: yield if lower priority (and not currently mid-move)
+                #
+                # FIX #3: in distributed mode, astar_3d + SpaceTimeGrid already
+                # guarantee collision-free paths against any peer whose
+                # PATH_INTENT reservations we know about. Previously this block
+                # fired an independent reroute on *every* WARNING/CRITICAL tick
+                # regardless of that — two robots could each clear + replan
+                # their space-time reservations every tick in response to each
+                # other's predictions, fighting the MAPF planner and producing
+                # exactly the thrash/livelock seen in the benchmark (huge
+                # waiting time, tiny reroute count relative to conflict count).
+                # We now only let this system override the planner when the
+                # planner genuinely doesn't know about the peer yet (stale or
+                # dropped PATH_INTENT) — otherwise we trust the existing
+                # reservation-based path and treat this as an early-warning
+                # signal, not an action trigger. In baseline mode there is no
+                # space-time planner, so the original per-tick logic still
+                # applies.
+                if not self.moving:
+                    peer_id = pred.other_robot_id
+                    peer = self.peer_knowledge.get(peer_id)
+                    if peer:
+                        if not self.baseline_mode:
+                            # In distributed/MAPF mode astar_3d + the shared
+                            # SpaceTimeGrid already guarantee a collision-free
+                            # path against any peer the planner has visibility
+                            # into. Independently reacting to every WARNING
+                            # (which is exactly what caused the livelock in
+                            # the benchmark: huge waiting_time/conflict counts,
+                            # tasks not finishing) fights the planner instead
+                            # of trusting it. So in distributed mode we only
+                            # ever step in when BOTH:
+                            #   (a) risk is CRITICAL, not just WARNING, and
+                            #   (b) the planner genuinely has no visibility of
+                            #       this peer within the prediction horizon
+                            #       (e.g. a brand-new robot, or a peer whose
+                            #       PATH_INTENT was dropped/late for many
+                            #       ticks) — anything else is left to the
+                            #       planner and just logged for the dashboard.
+                            if pred.risk_level != CollisionRisk.CRITICAL:
+                                continue
+                            if self._space_time_grid_has_peer_reservations(peer_id, tick):
+                                continue
+
+                        my_prio = self.priority
+                        peer_prio = peer.priority
+
+                        should_yield = False
+                        if my_prio < peer_prio:
+                            should_yield = True
+                        elif my_prio == peer_prio and self.robot_id > peer_id:
+                            should_yield = True
+
+                        # If we have higher priority, but the other robot is trapped/stopped, we MUST yield!
+                        if not should_yield:
+                            if peer.status in (RobotStatus.BLOCKED, RobotStatus.WAITING, RobotStatus.UNAVAILABLE):
+                                should_yield = True
+
+                        if should_yield:
+                            conflict_cell = pred.conflict_position or peer.position or self.position
+                            conflict = LocalConflict(
+                                other_robot_id=peer_id,
+                                cell=conflict_cell,
+                                conflict_type=f"PREDICTED_{pred.risk_level.value}",
+                                my_distance=max(1, self.position.manhattan_distance(conflict_cell)),
+                                peer_distance=(
+                                    peer.position.manhattan_distance(conflict_cell)
+                                    if peer.position else 1
+                                ),
+                                peer_priority=peer_prio,
+                            )
+                            # Route through the same negotiation path used
+                            # elsewhere (FIX #1) instead of calling
+                            # _initiate_reroute directly, so priority
+                            # comparison, waiting_for/deadlock bookkeeping,
+                            # and physical-occupancy checks are consistent
+                            # no matter which code path detected the conflict.
+                            self._handle_conflicts([conflict], tick, self._occupied_cells)
+                            break  # Only initiate one reroute per tick
+
+    def _space_time_grid_has_peer_reservations(
+        self,
+        peer_id: str,
+        current_tick: int,
+        horizon_ticks: int = PREDICTION_HORIZON_TICKS,
+    ) -> bool:
+        """
+        True when the shared SpaceTimeGrid has a reservation from *peer_id*
+        that is actually relevant *now* — i.e. inside
+        [current_tick, current_tick + horizon_ticks], or a terminal
+        (indefinite) reservation that has already taken effect by then.
+
+        This used to match ANY reservation the peer had EVER made, anywhere
+        in the grid — including stale entries from ticks long past. That
+        gave false confidence ("the planner knows about this peer") even
+        when the peer's relevant near-term intent had never arrived (e.g.
+        a dropped/late PATH_INTENT), which is exactly the situation this
+        check exists to catch. Scoping it to the live planning horizon
+        makes the trust decision accurate.
+        """
+        cutoff = current_tick + horizon_ticks
+        for (t, _pos), res_set in self.space_time_grid.reservations.items():
+            if current_tick <= t <= cutoff and peer_id in res_set:
+                return True
+        for _pos, term_set in self.space_time_grid.terminal_reservations.items():
+            for term_tick, term_id in term_set:
+                if term_id == peer_id and term_tick <= cutoff:
+                    return True
+        return False
+
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     #  TASK ACQUISITION & BIDDING
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -478,8 +662,25 @@ class RobotAgent:
         for task_id, start_tick in list(self.auction_start_ticks.items()):
             if tick - start_tick >= AUCTION_DURATION:
                 # Auction closed. Determine the winner locally.
-                bids = self.active_auctions.get(task_id, {})
-                
+                bids = dict(self.active_auctions.get(task_id, {}))
+
+                # BUGFIX: this method runs every tick regardless of whether
+                # we already have a current_task. A robot can place a bid
+                # while idle, then pick up other work before that auction's
+                # AUCTION_DURATION window closes. If it was still the low
+                # bidder, the code below used to blindly overwrite
+                # self.current_task with the newly-won task — silently
+                # orphaning whatever it was already doing (that task stays
+                # ASSIGNED/PICKING/DELIVERING in the pool forever, since
+                # reassignment only happens on robot failure, and nothing
+                # else was going to revisit it). Drop our own bid before
+                # picking a winner so we can never award a task to
+                # ourselves while we're busy with something else; if we
+                # were the only bidder the task simply stays PENDING and
+                # gets re-gossiped the next time any robot goes idle.
+                if self.current_task is not None:
+                    bids.pop(self.robot_id, None)
+
                 # Winner is the one with the lowest cost. Tie-break by robot_id string sorting.
                 if bids:
                     winner_id = min(bids.keys(), key=lambda rid: (bids[rid], rid))
@@ -615,21 +816,47 @@ class RobotAgent:
             self.status = RobotStatus.BLOCKED
             self.decision_reason = f"No path to {self.destination}"
             self.velocity = 0.0
+            self.blocked_time += 1
+            # Every DEADLOCK_WAIT_THRESHOLD ticks of being fully blocked
+            # (astar_3d found no route at all, e.g. boxed in by other
+            # stuck robots' reservations), explicitly drop our own
+            # reservations and log it so this is visible instead of the
+            # robot silently retrying forever with no diagnostic trail.
+            if self.blocked_time % DEADLOCK_WAIT_THRESHOLD == 0:
+                self._log_event(
+                    tick, "DEADLOCK",
+                    f"{self.robot_id} blocked with no viable path for "
+                    f"{self.blocked_time} ticks — releasing reservations and retrying",
+                )
+                if not self.baseline_mode:
+                    self.space_time_grid.clear_robot_reservations(self.robot_id)
             return
 
+        self.blocked_time = 0
         # Next cell to move to
         next_cell = self.planned_path[0]
 
         if self.baseline_mode:
-            # Baseline: Stop-and-wait if occupied
+            # Baseline: Stop-and-wait if occupied.
+            # FIX #1: route through the (previously dead) conflict_resolver
+            # negotiation path instead of hand-rolling WAITING state here.
+            # This restores waiting_for tracking, total_waiting_time
+            # bookkeeping, and — critically — periodic deadlock checks.
             occupant = self._occupied_cells.get(next_cell)
             if occupant and occupant != self.robot_id:
-                self.status = RobotStatus.WAITING
-                self.waiting_time += 1
-                self.velocity = 0.0
-                self.decision_reason = f"Cell {next_cell.to_tuple()} physically occupied by {occupant}"
+                peer = self.peer_knowledge.get(occupant)
+                conflict = LocalConflict(
+                    other_robot_id=occupant,
+                    cell=next_cell,
+                    conflict_type="INTERSECTION",
+                    my_distance=1,
+                    peer_distance=0,
+                    peer_priority=peer.priority if peer else 0,
+                )
+                self._handle_conflicts([conflict], tick, self._occupied_cells)
             else:
                 self.waiting_time = 0
+                self.waiting_for = None
                 self._start_move(next_cell, tick)
         else:
             # Distributed MAPF mode: Space-Time A* guarantees no robot-robot collisions.
@@ -640,14 +867,28 @@ class RobotAgent:
                 self.status = RobotStatus.BLOCKED
                 self.velocity = 0.0
                 return
-            
+
             # Since Space-Time A* might return current position as the next step (i.e. 'wait' action)
             if next_cell == self.position:
                 self.status = RobotStatus.WAITING
                 self.waiting_time += 1
+                self.total_waiting_time += 1
                 self.velocity = 0.0
                 self.decision_reason = "MAPF dictated wait"
                 self.planned_path.pop(0)  # consume the wait action
+                # FIX #2: previously this counter was tracked but never
+                # acted on in distributed mode, so a robot could sit in a
+                # "MAPF dictated wait" indefinitely if its reservation set
+                # became stale. Force a hard replan once it's been stuck
+                # too long instead of trusting the old reservations.
+                if self.waiting_time >= DEADLOCK_WAIT_THRESHOLD:
+                    self._log_event(
+                        tick, "DEADLOCK",
+                        f"{self.robot_id} stuck on MAPF wait for {self.waiting_time} ticks — forcing replan",
+                    )
+                    self.planned_path.clear()
+                    self.space_time_grid.clear_robot_reservations(self.robot_id)
+                    self.waiting_time = 0
                 return
 
             self.waiting_time = 0
@@ -752,8 +993,11 @@ class RobotAgent:
                 self.velocity = 0.0
                 self.decision_reason = f"Priority win but {next_cell.to_tuple()} physically occupied by {occupant}"
                 self._broadcast_wait_for(occupant, tick)
-                # DO NOT initiate reroute here; we have priority, they should move.
-                # If they don't move, deadlock detector will handle it eventually.
+                
+                # CRITICAL: Clear our path so we stop pretending we are moving forward in the Space-Time Grid.
+                # This ensures we drop our future reservations and place a solid terminal reservation
+                # on our current cell on the next tick, forcing the trapped robot to detour around us!
+                self.planned_path.clear()
             else:
                 self.status = RobotStatus.MOVING
                 self.decision_reason = f"Priority over {other_id} at {conflict.cell.to_tuple()}"
@@ -786,24 +1030,21 @@ class RobotAgent:
 
             self._broadcast_wait_for(other_id, tick)
 
-            # Check if we should reroute instead of continuing to wait
-            if should_reroute_vs_wait(
-                self.waiting_time, MAX_WAIT_BEFORE_REROUTE,
-                alternative_path_exists=True,  # optimistic
-            ):
-                self._initiate_reroute(tick, f"Waited {self.waiting_time} ticks for {other_id}")
-            elif self.waiting_time >= DEADLOCK_WAIT_THRESHOLD:
+            # Instantly attempt to reroute! If it fails to find an alternate path, it will fall back to WAITING.
+            self._initiate_reroute(tick, f"Yielding to {other_id} at {conflict.cell.to_tuple()}")
+
+            # FIX #2: distributed mode previously never checked for deadlock
+            # cycles at all. If repeated reroute attempts keep failing,
+            # waiting_time now keeps accumulating (see FIX #2 in
+            # _initiate_reroute) so this can actually fire.
+            if self.waiting_time >= DEADLOCK_WAIT_THRESHOLD:
                 self._check_deadlock(tick)
-            else:
-                self.decision_reason = f"Yielding to {other_id} at {conflict.cell.to_tuple()}"
-                self._log_event(tick, "NEGOTIATION",
-                    f"Yielding to {other_id} at {conflict.cell.to_tuple()}")
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     #  REROUTING
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-    def _initiate_reroute(self, tick: int, reason: str):
+    def _initiate_reroute(self, tick: int, reason: str, extra_avoid: Optional[Set[Position]] = None):
         if self.destination is None:
             return
 
@@ -811,22 +1052,43 @@ class RobotAgent:
 
         # Cells to avoid: conflict zone + peer positions
         avoid: Set[Position] = set()
+        if extra_avoid:
+            avoid.update(extra_avoid)
+            
         if self.waiting_for and self.waiting_for in self.peer_knowledge:
             pk = self.peer_knowledge[self.waiting_for]
             if pk.position:
                 avoid.add(pk.position)
-                for p in pk.planned_path[:5]:
+                for p in pk.planned_path:
                     avoid.add(p)
 
-        alt_path = find_alternative_path(
-            self.position,
-            self.destination,
-            self.warehouse.get_walkable_neighbors,
-            avoid,
-        )
+        if self.baseline_mode:
+            alt_path = find_alternative_path(
+                self.position,
+                self.destination,
+                self.warehouse.get_walkable_neighbors,
+                avoid,
+            )
+        else:
+            self.space_time_grid.clear_robot_reservations(self.robot_id)
+            alt_path = astar_3d(
+                start=self.position,
+                goal=self.destination,
+                start_tick=tick,
+                get_neighbors=self.warehouse.get_walkable_neighbors,
+                grid=self.space_time_grid,
+                robot_id=self.robot_id,
+                is_blocked=lambda p: p in avoid
+            )
 
         if alt_path and len(alt_path) > 1:
             self.planned_path = alt_path[1:]
+            
+            if not self.baseline_mode:
+                # reservations were cleared above before astar_3d
+                self.space_time_grid.reserve_path(self.robot_id, tick, [self.position] + self.planned_path)
+                self._broadcast_path_intent(tick)
+                
             # Send yield notification to whoever we were waiting for
             if self.waiting_for:
                 self.message_bus.send(Message(
@@ -845,11 +1107,26 @@ class RobotAgent:
             self.status = RobotStatus.IDLE  # ready to move on next tick
             self._broadcast_state(tick)
         else:
-            # No alternative — keep waiting but reset timer to prevent spam
+            # No alternative found this attempt.
+            # FIX #2: this used to reset waiting_time to 0 "to prevent
+            # deadlock spam", which had the side effect of making
+            # DEADLOCK_WAIT_THRESHOLD unreachable for any robot stuck in a
+            # repeated yield→reroute-fails→yield loop — the single biggest
+            # contributor to the distributed-mode livelock. We now leave
+            # waiting_time (and waiting_for) intact so the deadlock cycle
+            # detector can eventually take over and force a real resolution
+            # instead of retrying forever with no escalation.
             self.status = RobotStatus.BLOCKED
             self.decision_reason = f"No alternative route: {reason}"
             self._log_event(tick, "REROUTE", f"No alt route available: {reason}")
-            self.waiting_time = 0  # CRITICAL: Prevent deadlock spam every tick
+            self.planned_path.clear()  # CRITICAL: clear so it replans next tick with space-time A*
+            
+            if not self.baseline_mode:
+                # Since we cleared reservations to search, but failed to find a path,
+                # we are stuck here! We MUST reserve our current position indefinitely.
+                self.space_time_grid.reserve_path(self.robot_id, tick, [self.position])
+                self._broadcast_path_intent(tick)
+
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     #  DEADLOCK
@@ -897,6 +1174,31 @@ class RobotAgent:
 
     def _start_move(self, target: Position, tick: int):
         """Begin moving to an adjacent cell."""
+        # ── Physical safety check ────────────────────────────────────────
+        # Even if our Space-Time planner granted us this slot, a same-tick
+        # race can leave another robot at target.  Bail out rather than overlap.
+        occupant = self._occupied_cells.get(target)
+        if occupant and occupant != self.robot_id:
+            self.status = RobotStatus.WAITING
+            self.waiting_for = occupant
+            self.waiting_time += 1
+            self.total_waiting_time += 1
+            self.velocity = 0.0
+            self.decision_reason = f"Target {target.to_tuple()} blocked by {occupant} (safety check)"
+            # Invalidate the cached path so we replan next tick
+            self.planned_path.clear()
+
+            # This is the only place distributed-mode robots wait once the
+            # predictive-avoidance override is disabled (see
+            # _run_collision_prediction), so it must feed the wait-for graph
+            # and deadlock check itself — otherwise a genuine A<->B<->A cycle
+            # forming here would never be detected or broken.
+            self._broadcast_wait_for(occupant, tick)
+            if self.waiting_time >= DEADLOCK_WAIT_THRESHOLD:
+                self._check_deadlock(tick)
+            return
+        # ─────────────────────────────────────────────────────────────────
+
         self.prev_position = self.position
         self.target_cell = target
         self.heading = self.position.direction_to(target)
@@ -981,12 +1283,15 @@ class RobotAgent:
     def _broadcast_path_intent(self, tick: int):
         """Broadcast the full planned path so peers can update their local Space-Time Grids."""
         self.messages_sent += 1
+        
+        full_path = [self.position] + self.planned_path if self.planned_path else [self.position]
+        
         self.message_bus.send(Message(
             type=MessageType.PATH_INTENT,
             sender_id=self.robot_id,
             timestamp=tick,
             data={
-                "path": [p.to_tuple() for p in self.planned_path],
+                "path": [p.to_tuple() for p in full_path],
             },
         ))
 
@@ -1043,6 +1348,20 @@ class RobotAgent:
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
     def to_dict(self) -> dict:
+        # Summarise worst active prediction for frontend telemetry
+        worst_risk = "SAFE"
+        worst_peer = None
+        worst_ttc = None
+        if self.active_collision_predictions:
+            # Sort by risk severity (CRITICAL first)
+            _order = {CollisionRisk.CRITICAL: 0, CollisionRisk.WARNING: 1,
+                      CollisionRisk.LOW_RISK: 2, CollisionRisk.SAFE: 3}
+            worst = min(self.active_collision_predictions,
+                        key=lambda p: _order[p.risk_level])
+            worst_risk = worst.risk_level.value
+            worst_peer = worst.other_robot_id
+            worst_ttc  = round(worst.time_to_collision, 2) if worst.time_to_collision else None
+
         return {
             "robot_id": self.robot_id,
             "position": self.position.to_tuple(),
@@ -1076,6 +1395,10 @@ class RobotAgent:
                 "latency": round(self.hardware["latency"], 1),
                 "thermal": round(self.hardware["thermal"], 1),
             },
+            # ── Collision prediction telemetry ──────────────────
+            "collision_risk": worst_risk,
+            "collision_peer": worst_peer,
+            "collision_ttc": worst_ttc,
         }
 
     def reset(self, position: Position):
@@ -1103,8 +1426,10 @@ class RobotAgent:
         self.waiting_for = None
         self.waiting_time = 0
         self.total_waiting_time = 0
+        self.blocked_time = 0
         self.decision_reason = ""
         self.intent = ""
         self.priority = 0
         self.last_heartbeat = 0
         self.events.clear()
+        self.active_collision_predictions.clear()

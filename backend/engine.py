@@ -59,6 +59,9 @@ class SimulationEngine:
         self.warehouse: Warehouse = Warehouse()
         self.message_bus: SimulatedNetwork = SimulatedNetwork()
         self.task_pool: TaskPool = TaskPool()
+        # Shared Space-Time Grid — all robots plan against this single instance
+        # so reservations made by robot A are immediately visible to robot B.
+        self.space_time_grid: SpaceTimeGrid = SpaceTimeGrid()
 
         self.robots: Dict[str, RobotAgent] = {}
         self.tick: int = 0
@@ -105,13 +108,17 @@ class SimulationEngine:
         # Reset task pool
         self.task_pool.clear()
 
+        # Reset shared space-time grid
+        self.space_time_grid = SpaceTimeGrid()
+
         # Create tasks
         tasks = make_tasks(cfg.tasks)
         for task in tasks:
             self.task_pool.add_task(task)
         self.metrics.tasks_total = len(tasks)
 
-        # Create robots
+        # Create robots — all share the same SpaceTimeGrid instance so that
+        # reservations are immediately visible across all planners.
         self.robots.clear()
         for i, (robot_id, pos_tuple) in enumerate(cfg.robots.items()):
             pos = Position(*pos_tuple)
@@ -123,6 +130,7 @@ class SimulationEngine:
                 warehouse=self.warehouse,
                 message_bus=self.message_bus,
                 task_pool=self.task_pool,
+                space_time_grid=self.space_time_grid,
             )
             agent.baseline_mode = self.baseline_mode
             self.robots[robot_id] = agent
@@ -161,15 +169,23 @@ class SimulationEngine:
         # ── timed events ─────────────────────────────────
         self._apply_timed_events()
 
-        # ── robot decision cycles (ASYNCHRONOUS) ─────────
-        # Build currently occupied cells mapping
-        occupied_cells = {r.position: r.robot_id for r in self.robots.values() if r.status != RobotStatus.UNAVAILABLE}
-
-        # Run all robot ticks concurrently!
-        await asyncio.gather(*(
-            robot.tick_async(self.tick, occupied_cells=occupied_cells)
-            for robot in self.robots.values()
-        ))
+        # ── robot decision cycles (SEQUENTIAL) ──────────
+        # Robots are ticked one at a time so each sees an up-to-date
+        # occupied_cells map that includes movements from earlier robots
+        # in the same tick.  This prevents two robots from simultaneously
+        # deciding to step into the same cell.
+        for robot in self.robots.values():
+            # Rebuild occupancy from logical positions + in-transit targets
+            occupied_cells: Dict[Position, str] = {}
+            for r in self.robots.values():
+                if r.status == RobotStatus.UNAVAILABLE:
+                    continue
+                # The robot's *logical* position is already claimed
+                occupied_cells.setdefault(r.position, r.robot_id)
+                # If the robot is mid-transit, its target cell is also occupied
+                if r.moving and r.target_cell:
+                    occupied_cells.setdefault(r.target_cell, r.robot_id)
+            await robot.tick_async(self.tick, occupied_cells=occupied_cells)
 
         # Collect robot events (they are pushed to lists synchronously inside async methods, which is safe in python asyncio)
         for robot in self.robots.values():
@@ -427,6 +443,7 @@ class SimulationEngine:
             warehouse=self.warehouse,
             message_bus=self.message_bus,
             task_pool=self.task_pool,
+            space_time_grid=self.space_time_grid,  # share the engine's grid
         )
         agent.baseline_mode = self.baseline_mode
         self.robots[robot_id] = agent

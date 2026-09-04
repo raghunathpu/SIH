@@ -38,7 +38,12 @@ export interface RobotData {
     latency: number;
     thermal: number;
   };
+  // Predictive collision detection telemetry (from backend collision_predictor.py)
+  collision_risk: 'SAFE' | 'LOW_RISK' | 'WARNING' | 'CRITICAL';
+  collision_peer: string | null;
+  collision_ttc: number | null; // seconds until unsafe separation, null = SAFE
 }
+
 
 
 export interface TaskData {
