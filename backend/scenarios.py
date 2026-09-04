@@ -84,9 +84,9 @@ _register(ScenarioConfig(
     description="3 AMRs, moderate tasks, no forced conflicts. Tests basic operation.",
     seed=42,
     robots={
-        "AMR-01": (1, 0),
-        "AMR-02": (15, 0),
-        "AMR-03": (29, 0),
+        "AMR-01": (29, 0),
+        "AMR-02": (28, 0),
+        "AMR-03": (27, 0),
     },
     tasks=[
         {"task_id": "TASK-001", "pickup": (2, 18), "dropoff": (2, 1), "priority": 1},
@@ -95,7 +95,7 @@ _register(ScenarioConfig(
         {"task_id": "TASK-004", "pickup": (15, 18), "dropoff": (15, 1), "priority": 2},
         {"task_id": "TASK-005", "pickup": (16, 18), "dropoff": (16, 1), "priority": 1},
     ],
-    max_ticks=600,
+    max_ticks=0,
 ))
 
 # ──────────────────────────────────────────────────────────
@@ -119,7 +119,7 @@ _register(ScenarioConfig(
         # AMR-03: left→right across row 11
         {"task_id": "TASK-003", "pickup": (4, 18), "dropoff": (16, 1), "priority": 1},
     ],
-    max_ticks=500,
+    max_ticks=0,
 ))
 
 # ──────────────────────────────────────────────────────────
@@ -143,7 +143,7 @@ _register(ScenarioConfig(
         # AMR-03 uses adjacent narrow aisle at col 7
         {"task_id": "TASK-003", "pickup": (15, 18), "dropoff": (16, 1), "priority": 1},
     ],
-    max_ticks=500,
+    max_ticks=0,
 ))
 
 # ──────────────────────────────────────────────────────────
@@ -167,7 +167,7 @@ _register(ScenarioConfig(
         # AMR-03 operates independently
         {"task_id": "TASK-003", "pickup": (15, 18), "dropoff": (16, 1), "priority": 1},
     ],
-    max_ticks=500,
+    max_ticks=0,
 ))
 
 # ──────────────────────────────────────────────────────────
@@ -189,7 +189,7 @@ _register(ScenarioConfig(
         {"task_id": "TASK-002", "pickup": (2, 18), "dropoff": (16, 1), "priority": 1},
         {"task_id": "TASK-003", "pickup": (4, 18), "dropoff": (15, 1), "priority": 2},
     ],
-    max_ticks=500,
+    max_ticks=0,
 ))
 
 # ──────────────────────────────────────────────────────────
@@ -213,7 +213,7 @@ _register(ScenarioConfig(
         # AMR-03 needs to go where AMR-01 is heading
         {"task_id": "TASK-003", "pickup": (3, 18), "dropoff": (15, 1), "priority": 1},
     ],
-    max_ticks=600,
+    max_ticks=0,
 ))
 
 # ──────────────────────────────────────────────────────────
@@ -238,7 +238,7 @@ _register(ScenarioConfig(
     timed_obstacles={
         60: [(4, 7), (4, 8), (4, 9)],
     },
-    max_ticks=500,
+    max_ticks=0,
 ))
 
 # ──────────────────────────────────────────────────────────
@@ -262,7 +262,7 @@ _register(ScenarioConfig(
     ],
     # AMR-02 fails at tick 80
     timed_failures={80: ["AMR-02"]},
-    max_ticks=600,
+    max_ticks=0,
 ))
 
 # ──────────────────────────────────────────────────────────
@@ -274,11 +274,11 @@ _register(ScenarioConfig(
     description="5 robots, many tasks, heavy congestion. Stress test.",
     seed=42,
     robots={
-        "AMR-01": (0, 0),
-        "AMR-02": (10, 0),
-        "AMR-03": (22, 0),
-        "AMR-04": (0, 19),
-        "AMR-05": (29, 19),
+        "AMR-01": (29, 0),
+        "AMR-02": (28, 0),
+        "AMR-03": (27, 0),
+        "AMR-04": (26, 0),
+        "AMR-05": (25, 0),
     },
     tasks=[
         {"task_id": "TASK-001", "pickup": (2, 18), "dropoff": (2, 1), "priority": 2},
@@ -290,7 +290,7 @@ _register(ScenarioConfig(
         {"task_id": "TASK-007", "pickup": (15, 18), "dropoff": (2, 1), "priority": 1},
         {"task_id": "TASK-008", "pickup": (3, 18), "dropoff": (15, 1), "priority": 1},
     ],
-    max_ticks=800,
+    max_ticks=0,
 ))
 
 # ──────────────────────────────────────────────────────────
@@ -322,7 +322,7 @@ _register(ScenarioConfig(
         {"task_id": "TASK-005", "pickup": (4, 18), "dropoff": (2, 1), "priority": 1},
         {"task_id": "TASK-006", "pickup": (15, 18), "dropoff": (4, 1), "priority": 1},
     ],
-    max_ticks=2000,
+    max_ticks=0,
 ))
 
 
@@ -337,9 +337,9 @@ _register(ScenarioConfig(
     ),
     seed=42,
     robots={
-        "AMR-01": (0, 2),
-        "AMR-02": (10, 0),
-        "AMR-03": (22, 0),
+        "AMR-01": (29, 0),
+        "AMR-02": (28, 0),
+        "AMR-03": (27, 0),
     },
     tasks=[
         # Phase 1: Normal operations
@@ -363,7 +363,7 @@ _register(ScenarioConfig(
         # Phase 5: Recovery at tick 280
         280: ["AMR-02"],
     },
-    max_ticks=500,
+    max_ticks=0,
 ))
 
 

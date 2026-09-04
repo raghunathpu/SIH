@@ -3,15 +3,18 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import io
+import random
+import traceback
 from typing import List, Optional, Set
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from engine import SimulationEngine
 from models import Message, MessageType, Position, RobotStatus, Task
-from scenarios import get_scenario, list_scenarios, SCENARIOS
+from scenarios import get_scenario, list_scenarios
 from benchmark import run_benchmark
 
 
@@ -81,11 +84,7 @@ def api_benchmark(req: BenchmarkRequest):
 @app.post("/api/fail_robot/{robot_id}")
 def api_fail_robot(robot_id: str):
     if robot_id in engine.robots:
-        robot = engine.robots[robot_id]
-        robot.status = RobotStatus.UNAVAILABLE
-        robot.velocity = 0.0
-        robot.moving = False
-        robot._log_event(engine.tick, "FAILURE", "Simulated hardware failure")
+        engine.fail_robot(robot_id)
         return {"status": "success", "robot_id": robot_id}
     return {"status": "error", "message": "Robot not found"}
 
@@ -129,6 +128,56 @@ def api_add_obstacle(req: ObstacleRequest):
     return {"status": "success"}
 
 
+@app.post("/api/upload_blueprint_file")
+async def api_upload_blueprint_file(file: UploadFile = File(...)):
+    content = await file.read()
+    
+    try:
+        from PIL import Image  # type: ignore
+        import pymupdf as fitz  # type: ignore
+    except ImportError:
+        return {"status": "error", "message": "Pillow and PyMuPDF are required"}
+
+    img = None
+    filename = file.filename.lower() if file.filename else ""
+    if filename.endswith(".pdf"):
+        doc = fitz.open(stream=content, filetype="pdf")
+        if doc.page_count > 0:
+            page = doc.load_page(0)
+            pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
+            img = Image.open(io.BytesIO(pix.tobytes("png")))
+        doc.close()
+    else:
+        try:
+            img = Image.open(io.BytesIO(content))
+        except Exception:
+            pass
+
+    if not img:
+        return {"status": "error", "message": "Could not process file"}
+
+    img = img.convert("L")
+    max_w, max_h = 100, 100
+    w, h = img.size
+    ratio = min(max_w/w, max_h/h)
+    new_w, new_h = max(1, int(w * ratio)), max(1, int(h * ratio))
+    img = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
+
+    layout = []
+    for y in range(new_h):
+        row_str = ""
+        for x in range(new_w):
+            pixel = img.getpixel((x, y))
+            if pixel < 128:
+                row_str += "#"
+            else:
+                row_str += "."
+        layout.append(row_str)
+
+    engine.load_custom_layout(layout)
+    await _broadcast_state(include_warehouse=True)
+    return {"status": "success", "layout_size": f"{new_w}x{new_h}"}
+
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #  SIMULATION LOOP
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -142,7 +191,6 @@ async def simulation_loop():
                 state = engine.get_state(include_warehouse=False)
                 state_json = json.dumps(state)
             except Exception:
-                import traceback
                 with open("traceback.txt", "w") as f:
                     traceback.print_exc(file=f)
                 traceback.print_exc()
@@ -215,6 +263,12 @@ async def websocket_endpoint(ws: WebSocket):
                 await engine.step()
                 await _broadcast_state()
 
+            elif action == "upload_blueprint":
+                layout = cmd.get("layout", [])
+                if layout:
+                    engine.load_custom_layout(layout)
+                    await _broadcast_state(include_warehouse=True)
+
             elif action == "reset":
                 engine.reset()
                 _benchmark_result = None
@@ -224,12 +278,12 @@ async def websocket_endpoint(ws: WebSocket):
                 engine.speed = float(cmd.get("speed", 1.0))
 
             elif action == "inject_obstacle":
-                x, y = cmd.get("x", 0), cmd.get("y", 0)
+                x, y = int(cmd.get("x", 0)), int(cmd.get("y", 0))
                 engine.inject_obstacle(x, y)
                 await _broadcast_state(include_warehouse=True)
 
             elif action == "remove_obstacle":
-                x, y = cmd.get("x", 0), cmd.get("y", 0)
+                x, y = int(cmd.get("x", 0)), int(cmd.get("y", 0))
                 engine.remove_obstacle(x, y)
                 await _broadcast_state(include_warehouse=True)
 
@@ -238,8 +292,9 @@ async def websocket_endpoint(ws: WebSocket):
                 dropoff = cmd.get("dropoff", {"x": 0, "y": 0})
                 priority = int(cmd.get("priority", 1))
                 task = Task(
-                    pickup=Position(pickup["x"], pickup["y"]),
-                    dropoff=Position(dropoff["x"], dropoff["y"]),
+                    task_id=f"TASK-M-{engine.tick}-{random.randint(1000, 9999)}",
+                    pickup=Position(int(pickup["x"]), int(pickup["y"])),
+                    dropoff=Position(int(dropoff["x"]), int(dropoff["y"])),
                     priority=priority
                 )
                 engine.task_pool.add_task(task)

@@ -56,7 +56,7 @@ def _pad(row: str, width: int = 30) -> str:
 #  30 columns × 20 rows
 
 _DEFAULT_LAYOUT: List[str] = [
-    _pad("." * 30),                                         #  0  top aisle
+    _pad(".........................SSSSS"),                    #  0  top aisle
     _pad("..DDD..........DDD.........."),                    #  1  dropoff
     _pad("." * 30),                                         #  2  main aisle
     _pad("..##.##.##...##.##.##...##.##"),                   #  3  rack row
@@ -74,7 +74,7 @@ _DEFAULT_LAYOUT: List[str] = [
     _pad("..##.##.##...##.##.##...##.##"),                   # 15  rack row
     _pad("..##.##.##...##.##.##...##.##"),                   # 16  rack row
     _pad("." * 30),                                         # 17  main aisle
-    _pad("..PPP..C.......PPP..C...SS.."),                    # 18  pickup/charging/staging
+    _pad("..PPP..C.......PPP..C......."),                    # 18  pickup/charging
     _pad("." * 30),                                         # 19  bottom aisle
 ]
 

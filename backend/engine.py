@@ -33,6 +33,7 @@ from models import (
     SimulationMetrics,
     Task,
     TaskStatus,
+    CellType,
 )
 from warehouse import Warehouse
 from message_bus import SimulatedNetwork
@@ -128,6 +129,89 @@ class SimulationEngine:
 
         self._log_event("SYSTEM", None,
             f"Loaded scenario: {cfg.name} ({'BASELINE' if self.baseline_mode else 'DISTRIBUTED'})")
+
+    def load_custom_layout(self, layout: List[str]):
+        """Load a custom layout provided by the user."""
+        from scenarios import ScenarioConfig
+        cfg = ScenarioConfig(
+            scenario_id="CUSTOM",
+            name="Custom Blueprint",
+            description="User uploaded custom grid.",
+            robots={},
+            tasks=[],
+            max_ticks=0,
+        )
+        self._scenario = cfg
+        self.baseline_mode = False
+        self.tick = 0
+        self.running = False
+        self.events.clear()
+        self.conflicts.clear()
+        self.metrics.reset()
+        self._conflict_counter = 0
+
+        self.warehouse = Warehouse(layout=layout)
+        
+        # Auto-assign locations on the edges if missing
+        w = self.warehouse.width
+        h = self.warehouse.height
+        
+        # Find empty cells at top edge for Staging
+        staging_spots = []
+        for x in range(w-1, -1, -1):
+            if self.warehouse.grid.get(Position(x, 0)) == CellType.OPEN:
+                staging_spots.append(Position(x, 0))
+                self.warehouse.grid[Position(x, 0)] = CellType.STAGING
+                if len(staging_spots) >= 5: break
+                
+        # Find empty cells at bottom edge for Pickup / Dropoff
+        p_spots = 0
+        d_spots = 0
+        for x in range(w):
+            if self.warehouse.grid.get(Position(x, h-1)) == CellType.OPEN:
+                if p_spots < 3:
+                    self.warehouse.grid[Position(x, h-1)] = CellType.PICKUP
+                    p_spots += 1
+                elif d_spots < 3:
+                    self.warehouse.grid[Position(x, h-1)] = CellType.DROPOFF
+                    d_spots += 1
+                    
+        # Re-build internal caches since we modified grid
+        self.warehouse._build_graph()
+        self.warehouse._find_locations()
+        
+        self.message_bus.clear_all()
+        self.task_pool.clear()
+        self.robots.clear()
+        
+        # Auto-spawn some robots in Staging
+        for i, pos in enumerate(staging_spots[:5]):
+            rid = f"AMR-{i+1:02d}"
+            r = RobotAgent(
+                robot_id=rid,
+                start_position=pos,
+                color=ROBOT_COLORS[i % len(ROBOT_COLORS)],
+                warehouse=self.warehouse,
+                message_bus=self.message_bus,
+                task_pool=self.task_pool
+            )
+            r.baseline_mode = self.baseline_mode
+            self.robots[rid] = r
+            
+        # Add default tasks so they have something to do
+        from scenarios import make_tasks
+        if self.warehouse.pickups and self.warehouse.dropoffs:
+            default_tasks = [
+                {"task_id": f"CUST-00{i+1}", 
+                 "pickup": self.warehouse.pickups[i % len(self.warehouse.pickups)].to_tuple(), 
+                 "dropoff": self.warehouse.dropoffs[i % len(self.warehouse.dropoffs)].to_tuple(), 
+                 "priority": 1}
+                for i in range(5)
+            ]
+            for t in make_tasks(default_tasks):
+                self.task_pool.add_task(t)
+
+        self._log_event("SYSTEM", None, "Loaded custom blueprint layout with dynamic elements")
 
     def reset(self):
         """Reset to the loaded scenario's initial state."""
@@ -229,9 +313,14 @@ class SimulationEngine:
         ) if self.task_pool.get_all_tasks() else False
 
         if all_done:
-            self.running = False
-            self._log_event("SYSTEM", None, "All tasks completed")
-            return False
+            all_staged = all(
+                self.warehouse.get_cell_type(r.position) == CellType.STAGING
+                for r in self.robots.values()
+            )
+            if all_staged:
+                self.running = False
+                self._log_event("SYSTEM", None, "All tasks completed and robots staged")
+                return False
 
         return True
 

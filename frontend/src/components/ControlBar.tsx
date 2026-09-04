@@ -11,15 +11,66 @@ interface Props {
   onSetSpeed: (speed: number) => void;
   onLoadScenario: (id: string, baseline?: boolean) => void;
   onRunBenchmark: () => void;
+  onUploadBlueprint: (layout: string[]) => void;
 }
 
 export const ControlBar: React.FC<Props> = ({
-  state, scenarios, onPlay, onPause, onStep, onReset, onSetSpeed, onLoadScenario, onRunBenchmark
+  state, scenarios, onPlay, onPause, onStep, onReset, onSetSpeed, onLoadScenario, onRunBenchmark, onUploadBlueprint
 }) => {
+  const fileInputRef = React.useRef<HTMLInputElement>(null);
+
+  const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    if (file.type.startsWith('image/') || file.type === 'application/pdf' || file.name.endsWith('.pdf')) {
+      const formData = new FormData();
+      formData.append('file', file);
+      try {
+        const res = await fetch(`http://${window.location.hostname}:8000/api/upload_blueprint_file`, {
+          method: 'POST',
+          body: formData
+        });
+        const json = await res.json();
+        if (json.status === 'error') {
+          alert('Blueprint Upload Failed: ' + json.message);
+        }
+      } catch (err) {
+        alert('Blueprint Upload Request Failed. Is the backend running?');
+        console.error('Failed to upload file:', err);
+      }
+    } else {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const text = e.target?.result as string;
+        if (text) {
+          // Split by lines, trim trailing spaces, ignore empty lines
+          const lines = text.split('\n').map(l => l.trimEnd()).filter(l => l.length > 0);
+          if (lines.length > 0) {
+            onUploadBlueprint(lines);
+          }
+        }
+      };
+      reader.readAsText(file);
+    }
+    
+    // Reset input so the same file can be uploaded again if needed
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+  };
+
   if (!state) return null;
 
   return (
     <div className="control-bar">
+      <input 
+        type="file" 
+        accept=".txt,.json,.csv,image/png,image/jpeg,application/pdf" 
+        style={{ display: 'none' }} 
+        ref={fileInputRef} 
+        onChange={handleFileUpload} 
+      />
       {/* ── Scenario & Mode ── */}
       <div className="control-group">
         <select
@@ -74,10 +125,15 @@ export const ControlBar: React.FC<Props> = ({
         </div>
       </div>
 
-      {/* ── Benchmark ── */}
-      <button className="btn btn-benchmark" onClick={onRunBenchmark}>
-        📊 Benchmark
-      </button>
+      {/* ── Benchmark & Upload ── */}
+      <div style={{ display: 'flex', gap: '0.5rem' }}>
+        <button className="btn btn-secondary" onClick={() => fileInputRef.current?.click()} title="Upload Custom Grid Blueprint">
+          📁 Upload Map
+        </button>
+        <button className="btn btn-benchmark" onClick={onRunBenchmark}>
+          📊 Benchmark
+        </button>
+      </div>
     </div>
   );
 };

@@ -167,6 +167,8 @@ export function useSimulation() {
   const demoMode = useCallback(() => send('demo_mode'), [send]);
   const addTask = useCallback((pickup: {x: number, y: number}, dropoff: {x: number, y: number}, priority: number) =>
     send('add_task', { pickup, dropoff, priority }), [send]);
+  const uploadBlueprint = useCallback((layout: string[]) =>
+    send('upload_blueprint', { layout }), [send]);
 
   return {
     state,
@@ -179,6 +181,6 @@ export function useSimulation() {
     failRobot, recoverRobot,
     runBenchmark, demoMode,
     injectLatency, dropPackets,
-    addDeadZone, removeDeadZone, addTask,
+    addDeadZone, removeDeadZone, addTask, uploadBlueprint,
   };
 }

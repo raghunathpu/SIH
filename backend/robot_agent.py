@@ -43,6 +43,7 @@ from models import (
     SimulationEvent,
     Task,
     TaskStatus,
+    CellType,
 )
 from astar import astar, find_alternative_path
 from temporal_planner import astar_3d, SpaceTimeGrid
@@ -231,10 +232,47 @@ class RobotAgent:
         self._resolve_auctions(current_tick)
         
         if self.current_task is None:
-            self.status = RobotStatus.IDLE
-            self.velocity = 0.0
             self._try_acquire_task(current_tick)
-            # Broadcast state even when idle
+            
+            if self.current_task is None:
+                cell_type = self.warehouse.get_cell_type(self.position)
+                if cell_type != CellType.STAGING:
+                    self.task_phase = "RETURNING_TO_STAGING"
+                    if not self.destination or self.warehouse.get_cell_type(self.destination) != CellType.STAGING:
+                        target = self._find_available_staging_area()
+                        if target:
+                            self.destination = target
+                            self.planned_path.clear()
+                            self.status = RobotStatus.MOVING
+                            self._plan_and_move(current_tick)
+                        else:
+                            self.status = RobotStatus.IDLE
+                            self.velocity = 0.0
+                    else:
+                        # We already have a STAGING destination. Check if a peer has parked on it.
+                        parked = any(p for p in self.peer_knowledge.values() if p.position == self.destination and p.status == RobotStatus.IDLE)
+                        if parked:
+                            target = self._find_available_staging_area()
+                            if target:
+                                self.destination = target
+                                self.planned_path.clear()
+                                self.status = RobotStatus.MOVING
+                                self._plan_and_move(current_tick)
+                            else:
+                                self.destination = None
+                                self.status = RobotStatus.IDLE
+                                self.velocity = 0.0
+                        else:
+                            # Path to our existing destination if we aren't moving
+                            if self.position != self.destination:
+                                self.status = RobotStatus.MOVING
+                                self._plan_and_move(current_tick)
+                else:
+                    self.status = RobotStatus.IDLE
+                    self.velocity = 0.0
+                    self.destination = None
+                    self.planned_path.clear()
+            
             self._broadcast_state(current_tick)
             return
 
@@ -698,13 +736,33 @@ class RobotAgent:
             data={"task_id": task_id, "winner_id": self.robot_id}
         ))
 
-    def _try_acquire_task(self, tick: int):
-        """Task Gossip: Idle robots occasionally check the 'environment' for tasks."""
-        if self.battery < BATTERY_CRITICAL or self.status == RobotStatus.UNAVAILABLE:
-            return
+    def _find_available_staging_area(self) -> Optional[Position]:
+        """Find the nearest available staging cell that is not occupied or targeted by a peer."""
+        if not self.warehouse.staging_areas:
+            return None
             
-        # Only check every 10 ticks to avoid spamming
-        if tick % 10 != 0:
+        claimed = set()
+        for pid, state in self.peer_knowledge.items():
+            if state.position:
+                claimed.add(state.position)
+            # Only consider a peer's destination if they are actively moving there or waiting
+            if state.destination and state.status in (RobotStatus.MOVING, RobotStatus.WAITING, RobotStatus.REROUTING):
+                claimed.add(state.destination)
+                
+        available = [p for p in self.warehouse.staging_areas if p not in claimed]
+        if not available:
+            # If all claimed, fallback to any staging area that isn't physically parked in
+            parked = {state.position for state in self.peer_knowledge.values() if state.status == RobotStatus.IDLE and state.position}
+            available = [p for p in self.warehouse.staging_areas if p not in parked]
+            if not available:
+                return None
+            
+        available.sort(key=lambda p: self.position.manhattan_distance(p))
+        return available[0]
+
+    def _try_acquire_task(self, tick: int):
+        """Task Gossip: Idle robots check the 'environment' for tasks."""
+        if self.battery < BATTERY_CRITICAL or self.status == RobotStatus.UNAVAILABLE:
             return
             
         # Find a PENDING task that isn't currently being auctioned
@@ -716,7 +774,7 @@ class RobotAgent:
                 break
 
     def _broadcast_task_offer(self, task_id: str, task: Task, tick: int):
-        self.message_bus.send(Message(
+        msg = Message(
             type=MessageType.TASK_OFFER,
             sender_id=self.robot_id,
             timestamp=tick,
@@ -726,8 +784,12 @@ class RobotAgent:
                 "dropoff": {"x": task.dropoff.x, "y": task.dropoff.y},
                 "priority": task.priority,
             }
-        ))
+        )
+        self.message_bus.send(msg)
         self._log_event(tick, "TASK", f"Discovered and gossiped task {task_id}")
+        
+        # Manually process our own offer since message_bus broadcast excludes sender
+        self._on_task_offer(msg, tick)
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     #  TASK EXECUTION STATE MACHINE

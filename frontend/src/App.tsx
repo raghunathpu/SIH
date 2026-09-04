@@ -132,7 +132,7 @@ function App() {
       <main className="main-content">
         <aside className="sidebar-left">
           <FleetPanel state={sim.state} onSelectRobot={setSelectedRobotId} selectedRobotId={selectedRobotId} />
-          <TaskPanel onAddTask={sim.addTask} />
+          <TaskPanel onAddTask={sim.addTask} state={sim.state} />
           <FaultPanel state={sim.state} onInjectLatency={sim.injectLatency} onDropPackets={sim.dropPackets} />
         </aside>
 
@@ -147,6 +147,7 @@ function App() {
             onSetSpeed={sim.setSpeed}
             onLoadScenario={sim.loadScenario}
             onRunBenchmark={sim.runBenchmark}
+            onUploadBlueprint={sim.uploadBlueprint}
           />
           
           <MetricsBar state={sim.state} />
