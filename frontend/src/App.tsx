@@ -3,6 +3,7 @@ import { useSimulation } from './useSimulation';
 import WarehouseCanvas from './components/WarehouseCanvas';
 import { FleetPanel } from './components/FleetPanel';
 import { FaultPanel } from './components/FaultPanel';
+import { TaskPanel } from './components/TaskPanel';
 import { RobotDetail } from './components/RobotDetail';
 import { LiveEventFeed } from './components/LiveEventFeed';
 import { ControlBar } from './components/ControlBar';
@@ -131,6 +132,7 @@ function App() {
       <main className="main-content">
         <aside className="sidebar-left">
           <FleetPanel state={sim.state} onSelectRobot={setSelectedRobotId} selectedRobotId={selectedRobotId} />
+          <TaskPanel onAddTask={sim.addTask} />
           <FaultPanel state={sim.state} onInjectLatency={sim.injectLatency} onDropPackets={sim.dropPackets} />
         </aside>
 

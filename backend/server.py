@@ -10,7 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from engine import SimulationEngine
-from models import Message, MessageType, Position, RobotStatus
+from models import Message, MessageType, Position, RobotStatus, Task
 from scenarios import get_scenario, list_scenarios, SCENARIOS
 from benchmark import run_benchmark
 
@@ -232,6 +232,19 @@ async def websocket_endpoint(ws: WebSocket):
                 x, y = cmd.get("x", 0), cmd.get("y", 0)
                 engine.remove_obstacle(x, y)
                 await _broadcast_state(include_warehouse=True)
+
+            elif action == "add_task":
+                pickup = cmd.get("pickup", {"x": 0, "y": 0})
+                dropoff = cmd.get("dropoff", {"x": 0, "y": 0})
+                priority = int(cmd.get("priority", 1))
+                task = Task(
+                    pickup=Position(pickup["x"], pickup["y"]),
+                    dropoff=Position(dropoff["x"], dropoff["y"]),
+                    priority=priority
+                )
+                engine.task_pool.add_task(task)
+                engine._log_event("SYSTEM", None, f"Manual task added: pickup {pickup}, dropoff {dropoff}")
+                await _broadcast_state()
 
             elif action == "fail_robot":
                 robot_id = cmd.get("robot_id", "")

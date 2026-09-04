@@ -165,6 +165,8 @@ export function useSimulation() {
   const removeDeadZone = useCallback((x1: number, y1: number, x2: number, y2: number) =>
     send('remove_dead_zone', { x1, y1, x2, y2 }), [send]);
   const demoMode = useCallback(() => send('demo_mode'), [send]);
+  const addTask = useCallback((pickup: {x: number, y: number}, dropoff: {x: number, y: number}, priority: number) =>
+    send('add_task', { pickup, dropoff, priority }), [send]);
 
   return {
     state,
@@ -177,6 +179,6 @@ export function useSimulation() {
     failRobot, recoverRobot,
     runBenchmark, demoMode,
     injectLatency, dropPackets,
-    addDeadZone, removeDeadZone,
+    addDeadZone, removeDeadZone, addTask,
   };
 }

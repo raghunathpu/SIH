@@ -564,27 +564,9 @@ class RobotAgent:
                     peer_id = pred.other_robot_id
                     peer = self.peer_knowledge.get(peer_id)
                     if peer:
-                        if not self.baseline_mode:
-                            # In distributed/MAPF mode astar_3d + the shared
-                            # SpaceTimeGrid already guarantee a collision-free
-                            # path against any peer the planner has visibility
-                            # into. Independently reacting to every WARNING
-                            # (which is exactly what caused the livelock in
-                            # the benchmark: huge waiting_time/conflict counts,
-                            # tasks not finishing) fights the planner instead
-                            # of trusting it. So in distributed mode we only
-                            # ever step in when BOTH:
-                            #   (a) risk is CRITICAL, not just WARNING, and
-                            #   (b) the planner genuinely has no visibility of
-                            #       this peer within the prediction horizon
-                            #       (e.g. a brand-new robot, or a peer whose
-                            #       PATH_INTENT was dropped/late for many
-                            #       ticks) — anything else is left to the
-                            #       planner and just logged for the dashboard.
-                            if pred.risk_level != CollisionRisk.CRITICAL:
-                                continue
-                            if self._space_time_grid_has_peer_reservations(peer_id, tick):
-                                continue
+                        # Active avoidance happens below regardless of baseline_mode since
+                        # decentralized planning relies on this prediction step to catch
+                        # overlaps resulting from simultaneous pathing.
 
                         my_prio = self.priority
                         peer_prio = peer.priority
@@ -1057,7 +1039,7 @@ class RobotAgent:
             
         if self.waiting_for and self.waiting_for in self.peer_knowledge:
             pk = self.peer_knowledge[self.waiting_for]
-            if pk.position:
+            if self.baseline_mode and pk.position:
                 avoid.add(pk.position)
                 for p in pk.planned_path:
                     avoid.add(p)
@@ -1087,6 +1069,7 @@ class RobotAgent:
             if not self.baseline_mode:
                 # reservations were cleared above before astar_3d
                 self.space_time_grid.reserve_path(self.robot_id, tick, [self.position] + self.planned_path)
+                self._broadcast_intent(tick)
                 self._broadcast_path_intent(tick)
                 
             # Send yield notification to whoever we were waiting for

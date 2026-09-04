@@ -59,10 +59,6 @@ class SimulationEngine:
         self.warehouse: Warehouse = Warehouse()
         self.message_bus: SimulatedNetwork = SimulatedNetwork()
         self.task_pool: TaskPool = TaskPool()
-        # Shared Space-Time Grid — all robots plan against this single instance
-        # so reservations made by robot A are immediately visible to robot B.
-        self.space_time_grid: SpaceTimeGrid = SpaceTimeGrid()
-
         self.robots: Dict[str, RobotAgent] = {}
         self.tick: int = 0
         self.running: bool = False
@@ -108,17 +104,13 @@ class SimulationEngine:
         # Reset task pool
         self.task_pool.clear()
 
-        # Reset shared space-time grid
-        self.space_time_grid = SpaceTimeGrid()
-
         # Create tasks
         tasks = make_tasks(cfg.tasks)
         for task in tasks:
             self.task_pool.add_task(task)
         self.metrics.tasks_total = len(tasks)
 
-        # Create robots — all share the same SpaceTimeGrid instance so that
-        # reservations are immediately visible across all planners.
+        # Create robots — each will create its own local SpaceTimeGrid
         self.robots.clear()
         for i, (robot_id, pos_tuple) in enumerate(cfg.robots.items()):
             pos = Position(*pos_tuple)
@@ -130,7 +122,6 @@ class SimulationEngine:
                 warehouse=self.warehouse,
                 message_bus=self.message_bus,
                 task_pool=self.task_pool,
-                space_time_grid=self.space_time_grid,
             )
             agent.baseline_mode = self.baseline_mode
             self.robots[robot_id] = agent
@@ -443,7 +434,6 @@ class SimulationEngine:
             warehouse=self.warehouse,
             message_bus=self.message_bus,
             task_pool=self.task_pool,
-            space_time_grid=self.space_time_grid,  # share the engine's grid
         )
         agent.baseline_mode = self.baseline_mode
         self.robots[robot_id] = agent
