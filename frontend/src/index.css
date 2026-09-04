@@ -403,6 +403,18 @@ h1, h2, h3, h4, h5, h6 {
   box-shadow: 0 0 8px rgba(59, 130, 246, 0.2);
 }
 
+.click-mode-btn.active-deadzone {
+  background: rgba(239, 68, 68, 0.15);
+  color: #f87171;
+  box-shadow: 0 0 8px rgba(239, 68, 68, 0.25);
+  animation: deadzone-pulse 2s ease-in-out infinite;
+}
+
+@keyframes deadzone-pulse {
+  0%, 100% { box-shadow: 0 0 8px rgba(239, 68, 68, 0.25); }
+  50% { box-shadow: 0 0 14px rgba(239, 68, 68, 0.45); }
+}
+
 .progress-bg {
   background: rgba(255,255,255,0.1);
   height: 6px;

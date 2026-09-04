@@ -10,7 +10,7 @@ The interface is identical: send(message) / receive(robot_id) → [Message].
 
 from __future__ import annotations
 
-from typing import Dict, List
+from typing import Dict, List, Tuple
 
 from models import Message
 from network_interface import NetworkInterface
@@ -44,6 +44,12 @@ class SimulatedNetwork(NetworkInterface):
         self.packet_drop_prob = 0.05
         self.max_range = 15.0 # Max cells for communication
 
+        # Wi-Fi Dead Zones — rectangular regions where comms are blocked
+        self.dead_zones: List[Tuple[int, int, int, int]] = []  # (x1, y1, x2, y2)
+
+        # Reference to robots dict — set each tick by engine.step()
+        self._robots_ref: dict = {}
+
     # ── registration ─────────────────────────────────────
 
     def register(self, robot_id: str):
@@ -53,15 +59,48 @@ class SimulatedNetwork(NetworkInterface):
     def unregister(self, robot_id: str):
         self._inboxes.pop(robot_id, None)
 
+    # ── dead zone helpers ─────────────────────────────────
+
+    def is_in_dead_zone(self, position) -> bool:
+        """Check if a Position falls inside any dead zone rectangle."""
+        px, py = position.x, position.y
+        for x1, y1, x2, y2 in self.dead_zones:
+            if min(x1, x2) <= px <= max(x1, x2) and min(y1, y2) <= py <= max(y1, y2):
+                return True
+        return False
+
+    def add_dead_zone(self, x1: int, y1: int, x2: int, y2: int):
+        """Register a rectangular Wi-Fi dead zone."""
+        zone = (min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2))
+        if zone not in self.dead_zones:
+            self.dead_zones.append(zone)
+
+    def remove_dead_zone(self, x1: int, y1: int, x2: int, y2: int):
+        """Remove a rectangular Wi-Fi dead zone."""
+        zone = (min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2))
+        if zone in self.dead_zones:
+            self.dead_zones.remove(zone)
+
+    def clear_dead_zones(self):
+        self.dead_zones.clear()
+
     # ── send / receive ───────────────────────────────────
 
-    def send(self, message: Message):
+    def send(self, message: Message, robots_dict: dict = None):
         """
         Queue *message* for delivery. Simulates network unreliability.
+        Blocks transmission if the sender is inside a Wi-Fi dead zone.
         """
         if not message.validate():
             return
-            
+
+        # Dead zone check — sender cannot transmit
+        rdict = robots_dict or self._robots_ref
+        if rdict and message.sender_id in rdict:
+            sender_pos = rdict[message.sender_id].position
+            if self.is_in_dead_zone(sender_pos):
+                return  # silently drop — robot has no Wi-Fi
+
         import random
         # Simulate global packet drop (e.g. interference)
         if random.random() < self.packet_drop_prob:
@@ -91,8 +130,12 @@ class SimulatedNetwork(NetworkInterface):
     def step(self, current_tick: int, robots_dict: dict = None):
         """
         Process the inflight queue and deliver messages whose time has come.
-        Applies distance-based range limits if robots_dict is provided.
+        Applies distance-based range limits and dead zone blocking.
         """
+        # Store robots reference so send() can use it for dead zone checks
+        if robots_dict:
+            self._robots_ref = robots_dict
+
         pending = []
         for delivery_tick, target_id, msg in self._inflight:
             if current_tick >= delivery_tick:
@@ -104,7 +147,13 @@ class SimulatedNetwork(NetworkInterface):
                     dist = sender_pos.manhattan_distance(target_pos)
                     if dist > self.max_range:
                         drop = True
-                
+
+                # Dead zone check — receiver cannot receive
+                if not drop and robots_dict and target_id in robots_dict:
+                    target_pos = robots_dict[target_id].position
+                    if self.is_in_dead_zone(target_pos):
+                        drop = True
+
                 if not drop and target_id in self._inboxes:
                     self._inboxes[target_id].append(msg)
             else:
@@ -177,6 +226,7 @@ class SimulatedNetwork(NetworkInterface):
         self._total_sent = 0
         self._comm_graph.clear()
         self._recent_edges.clear()
+        self.dead_zones.clear()
 
     def clear_all(self):
         """Full reset including registrations."""
@@ -186,3 +236,4 @@ class SimulatedNetwork(NetworkInterface):
         self._total_sent = 0
         self._comm_graph.clear()
         self._recent_edges.clear()
+        self.dead_zones.clear()

@@ -264,6 +264,22 @@ async def websocket_endpoint(ws: WebSocket):
                 engine.message_bus.packet_drop_prob = val
                 await _broadcast_state()
 
+            elif action == "add_dead_zone":
+                x1 = int(cmd.get("x1", 0))
+                y1 = int(cmd.get("y1", 0))
+                x2 = int(cmd.get("x2", 0))
+                y2 = int(cmd.get("y2", 0))
+                engine.add_dead_zone(x1, y1, x2, y2)
+                await _broadcast_state()
+
+            elif action == "remove_dead_zone":
+                x1 = int(cmd.get("x1", 0))
+                y1 = int(cmd.get("y1", 0))
+                x2 = int(cmd.get("x2", 0))
+                y2 = int(cmd.get("y2", 0))
+                engine.remove_dead_zone(x1, y1, x2, y2)
+                await _broadcast_state()
+
             elif action == "run_benchmark":
                 scenario_id = cmd.get("scenario", "10_BENCHMARK")
                 # Run benchmark in a separate thread to prevent blocking the event loop

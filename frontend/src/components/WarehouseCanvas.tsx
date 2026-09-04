@@ -1,5 +1,5 @@
 import { useRef, useEffect, useState, useCallback } from 'react';
-import type { SimulationState, RobotData } from '../types';
+import type { SimulationState, RobotData, ClickMode } from '../types';
 
 /* ────────────────────────────────────────────────────────
  *  CELL COLOURS
@@ -39,13 +39,20 @@ interface Props {
   selectedRobot: string | null;
   onSelectRobot: (id: string | null) => void;
   onCellClick?: (x: number, y: number) => void;
+  clickMode?: ClickMode;
+  onDeadZoneDraw?: (x1: number, y1: number, x2: number, y2: number) => void;
 }
 
-export default function WarehouseCanvas({ state, selectedRobot, onSelectRobot, onCellClick }: Props) {
+export default function WarehouseCanvas({ state, selectedRobot, onSelectRobot, onCellClick, clickMode, onDeadZoneDraw }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ w: 800, h: 540 });
   const animFrameRef = useRef<number>(0);
+
+  // Dead zone drag state (grid coordinates)
+  const [dzDragStart, setDzDragStart] = useState<{ x: number; y: number } | null>(null);
+  const [dzDragEnd, setDzDragEnd] = useState<{ x: number; y: number } | null>(null);
+  const isDzDragging = useRef(false);
   
   // View transform state for pan/zoom
   const [transform, setTransform] = useState({ x: 0, y: 0, scale: 1 });
@@ -93,32 +100,64 @@ export default function WarehouseCanvas({ state, selectedRobot, onSelectRobot, o
     setIsDragging(false);
   }, []);
 
+  // Helper: pixel → grid coordinates
+  const pixelToGrid = useCallback((clientX: number, clientY: number) => {
+    if (!state?.warehouse || !canvasRef.current) return null;
+    const rect = canvasRef.current.getBoundingClientRect();
+    const mx = (clientX - rect.left - transform.x) / transform.scale;
+    const my = (clientY - rect.top - transform.y) / transform.scale;
+    const wh = state.warehouse;
+    const cellSize = Math.min(size.w / wh.width, size.h / wh.height);
+    const offsetX = (size.w - (wh.width * cellSize)) / 2;
+    const offsetY = (size.h - (wh.height * cellSize)) / 2;
+    const gx = Math.floor((mx - offsetX) / cellSize);
+    const gy = Math.floor((my - offsetY) / cellSize);
+    if (gx >= 0 && gx < wh.width && gy >= 0 && gy < wh.height) return { x: gx, y: gy };
+    return null;
+  }, [state, size, transform]);
+
+  // Dead zone drag handlers
+  const handleDzMouseDown = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
+    if (clickMode !== 'DEAD_ZONE') return;
+    const pos = pixelToGrid(e.clientX, e.clientY);
+    if (pos) {
+      isDzDragging.current = true;
+      setDzDragStart(pos);
+      setDzDragEnd(pos);
+    }
+  }, [clickMode, pixelToGrid]);
+
+  const handleDzMouseMove = useCallback((e: React.MouseEvent) => {
+    if (!isDzDragging.current || clickMode !== 'DEAD_ZONE') return;
+    const pos = pixelToGrid(e.clientX, e.clientY);
+    if (pos) setDzDragEnd(pos);
+  }, [clickMode, pixelToGrid]);
+
+  const handleDzMouseUp = useCallback(() => {
+    if (!isDzDragging.current || !dzDragStart || !dzDragEnd) {
+      isDzDragging.current = false;
+      return;
+    }
+    isDzDragging.current = false;
+    // Only create a zone if dragged at least 1 cell
+    if (dzDragStart.x !== dzDragEnd.x || dzDragStart.y !== dzDragEnd.y) {
+      onDeadZoneDraw?.(dzDragStart.x, dzDragStart.y, dzDragEnd.x, dzDragEnd.y);
+    }
+    setDzDragStart(null);
+    setDzDragEnd(null);
+  }, [dzDragStart, dzDragEnd, onDeadZoneDraw]);
+
   // Canvas click handler (translated through zoom/pan)
   const handleClick = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
     if (!state?.warehouse || !canvasRef.current) return;
     if (isDragging) return; // Don't trigger click on drag end
     
-    const rect = canvasRef.current.getBoundingClientRect();
-    const mx = (e.clientX - rect.left - transform.x) / transform.scale;
-    const my = (e.clientY - rect.top - transform.y) / transform.scale;
-    
-    const wh = state.warehouse;
-    // Calculate base cell size before scale
-    const rawCellW = size.w / wh.width;
-    const rawCellH = size.h / wh.height;
-    const cellSize = Math.min(rawCellW, rawCellH);
-    const offsetX = (size.w - (wh.width * cellSize)) / 2;
-    const offsetY = (size.h - (wh.height * cellSize)) / 2;
-    
-    // Adjust mouse coordinates by the centering offset
-    const adjustedMx = mx - offsetX;
-    const adjustedMy = my - offsetY;
+    const pos = pixelToGrid(e.clientX, e.clientY);
+    if (!pos) { onSelectRobot(null); return; }
+    const { x: gx, y: gy } = pos;
 
-    const gx = Math.floor(adjustedMx / cellSize);
-    const gy = Math.floor(adjustedMy / cellSize);
-
-    // Always fire onCellClick for valid grid coordinates
-    if (onCellClick && gx >= 0 && gx < wh.width && gy >= 0 && gy < wh.height) {
+    // Fire cell click for valid grid coordinates (skip if we just finished a dead zone drag)
+    if (onCellClick && !isDzDragging.current) {
       onCellClick(gx, gy);
     }
 
@@ -132,7 +171,7 @@ export default function WarehouseCanvas({ state, selectedRobot, onSelectRobot, o
     } else {
       onSelectRobot(null);
     }
-  }, [state, size, transform, isDragging, onSelectRobot, onCellClick]);
+  }, [state, size, transform, isDragging, onSelectRobot, onCellClick, pixelToGrid]);
 
   // Render loop
   useEffect(() => {
@@ -203,6 +242,72 @@ export default function WarehouseCanvas({ state, selectedRobot, onSelectRobot, o
         }
       }
 
+      // ── Dead Zones ──
+      const deadZones = state.dead_zones || [];
+      for (const [x1, y1, x2, y2] of deadZones) {
+        const dzX = x1 * baseCellW;
+        const dzY = y1 * baseCellH;
+        const dzW = (x2 - x1 + 1) * baseCellW;
+        const dzH = (y2 - y1 + 1) * baseCellH;
+
+        // Pulsing overlay
+        const pulse = (Math.sin(time * 3) + 1) / 2;
+        ctx.fillStyle = `rgba(239, 68, 68, ${0.08 + 0.07 * pulse})`;
+        ctx.fillRect(dzX, dzY, dzW, dzH);
+
+        // Hatched lines
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(dzX, dzY, dzW, dzH);
+        ctx.clip();
+        ctx.strokeStyle = `rgba(239, 68, 68, ${0.15 + 0.1 * pulse})`;
+        ctx.lineWidth = 1;
+        const spacing = 12;
+        for (let i = -dzH; i < dzW + dzH; i += spacing) {
+          ctx.beginPath();
+          ctx.moveTo(dzX + i, dzY);
+          ctx.lineTo(dzX + i - dzH, dzY + dzH);
+          ctx.stroke();
+        }
+        ctx.restore();
+
+        // Animated dashed border
+        ctx.setLineDash([8, 4]);
+        ctx.lineDashOffset = -time * 30;
+        ctx.strokeStyle = `rgba(239, 68, 68, ${0.5 + 0.3 * pulse})`;
+        ctx.lineWidth = 2;
+        ctx.strokeRect(dzX, dzY, dzW, dzH);
+        ctx.setLineDash([]);
+
+        // Label
+        const labelSize = Math.max(10, baseCellW * 0.45);
+        ctx.font = `bold ${labelSize}px 'JetBrains Mono', monospace`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillStyle = `rgba(239, 68, 68, ${0.7 + 0.3 * pulse})`;
+        ctx.fillText('📡 DEAD ZONE', dzX + dzW / 2, dzY + dzH / 2);
+      }
+
+      // ── Dead zone drag preview ──
+      if (dzDragStart && dzDragEnd && clickMode === 'DEAD_ZONE') {
+        const px1 = Math.min(dzDragStart.x, dzDragEnd.x);
+        const py1 = Math.min(dzDragStart.y, dzDragEnd.y);
+        const px2 = Math.max(dzDragStart.x, dzDragEnd.x);
+        const py2 = Math.max(dzDragStart.y, dzDragEnd.y);
+        const previewX = px1 * baseCellW;
+        const previewY = py1 * baseCellH;
+        const previewW = (px2 - px1 + 1) * baseCellW;
+        const previewH = (py2 - py1 + 1) * baseCellH;
+
+        ctx.fillStyle = 'rgba(239, 68, 68, 0.15)';
+        ctx.fillRect(previewX, previewY, previewW, previewH);
+        ctx.setLineDash([6, 3]);
+        ctx.strokeStyle = 'rgba(239, 68, 68, 0.8)';
+        ctx.lineWidth = 2;
+        ctx.strokeRect(previewX, previewY, previewW, previewH);
+        ctx.setLineDash([]);
+      }
+
       // ── Robots ──
       for (const r of robots) {
         drawRobot(ctx, r, baseCellW, baseCellH, r.robot_id === selectedRobot);
@@ -214,7 +319,7 @@ export default function WarehouseCanvas({ state, selectedRobot, onSelectRobot, o
 
     animFrameRef.current = requestAnimationFrame(draw);
     return () => cancelAnimationFrame(animFrameRef.current);
-  }, [state, size, transform, selectedRobot]);
+  }, [state, size, transform, selectedRobot, dzDragStart, dzDragEnd, clickMode]);
 
   return (
     <div 
@@ -222,16 +327,17 @@ export default function WarehouseCanvas({ state, selectedRobot, onSelectRobot, o
       style={{ width: '100%', height: '100%', overflow: 'hidden', position: 'relative' }}
       onWheel={handleWheel}
       onMouseDown={handleMouseDown}
-      onMouseMove={handleMouseMove}
-      onMouseUp={handleMouseUp}
-      onMouseLeave={handleMouseUp}
+      onMouseMove={(e) => { handleMouseMove(e); handleDzMouseMove(e); }}
+      onMouseUp={() => { handleMouseUp(); handleDzMouseUp(); }}
+      onMouseLeave={() => { handleMouseUp(); handleDzMouseUp(); }}
     >
       <canvas
         ref={canvasRef}
         width={size.w}
         height={size.h}
         onClick={handleClick}
-        style={{ display: 'block', cursor: isDragging ? 'grabbing' : 'crosshair' }}
+        onMouseDown={handleDzMouseDown}
+        style={{ display: 'block', cursor: clickMode === 'DEAD_ZONE' ? 'crosshair' : (isDragging ? 'grabbing' : 'crosshair') }}
       />
       <div style={{ position: 'absolute', bottom: 16, right: 16, display: 'flex', gap: '0.5rem', zIndex: 10 }}>
         <button className="btn btn-secondary" style={{ padding: '0.25rem 0.5rem' }} onClick={() => setTransform(t => ({...t, scale: Math.min(3, t.scale * 1.2)}))}>+</button>

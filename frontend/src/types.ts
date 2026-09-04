@@ -1,4 +1,4 @@
-export type ClickMode = 'OBSTACLE' | 'ROBOT';
+export type ClickMode = 'OBSTACLE' | 'ROBOT' | 'DEAD_ZONE';
 
 export interface Position {
   x: number;
@@ -129,6 +129,7 @@ export interface SimulationState {
   events: EventData[];
   comm_graph: CommEdge[];
   comm_summary: CommSummary[];
+  dead_zones: [number, number, number, number][];
 }
 
 export interface BenchmarkResult {

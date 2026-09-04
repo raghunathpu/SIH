@@ -448,6 +448,18 @@ class SimulationEngine:
             del self.robots[robot_id]
             self._log_event("SYSTEM", robot_id, f"Robot {robot_id} removed")
 
+    def add_dead_zone(self, x1: int, y1: int, x2: int, y2: int):
+        """Add a rectangular Wi-Fi dead zone."""
+        self.message_bus.add_dead_zone(x1, y1, x2, y2)
+        self._log_event("NETWORK", None,
+            f"Wi-Fi dead zone added: ({x1},{y1}) to ({x2},{y2})")
+
+    def remove_dead_zone(self, x1: int, y1: int, x2: int, y2: int):
+        """Remove a rectangular Wi-Fi dead zone."""
+        self.message_bus.remove_dead_zone(x1, y1, x2, y2)
+        self._log_event("NETWORK", None,
+            f"Wi-Fi dead zone removed: ({x1},{y1}) to ({x2},{y2})")
+
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     #  LOGGING
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -484,6 +496,7 @@ class SimulationEngine:
                 recent_ticks=15, current_tick=self.tick
             ),
             "comm_summary": self.message_bus.get_comm_summary(),
+            "dead_zones": [list(z) for z in self.message_bus.dead_zones],
         }
         if include_warehouse:
             state["warehouse"] = self.warehouse.to_dict()

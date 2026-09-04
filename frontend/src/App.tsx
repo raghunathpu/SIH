@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useRef } from 'react';
 import { useSimulation } from './useSimulation';
 import WarehouseCanvas from './components/WarehouseCanvas';
 import { FleetPanel } from './components/FleetPanel';
@@ -21,6 +21,10 @@ function App() {
   const [activeTab, setActiveTab] = useState<Tab>('WAREHOUSE');
   const [clickMode, setClickMode] = useState<ClickMode>('OBSTACLE');
 
+  // Dead zone drag state (grid coordinates)
+  const [deadZoneDragStart, setDeadZoneDragStart] = useState<{ x: number; y: number } | null>(null);
+  const [deadZoneDragEnd, setDeadZoneDragEnd] = useState<{ x: number; y: number } | null>(null);
+
   /** Route grid cell clicks based on the active click mode */
   const handleCellClick = useCallback((x: number, y: number) => {
     if (!sim.state) return;
@@ -34,6 +38,15 @@ function App() {
       } else {
         sim.addRobot(x, y);
       }
+    } else if (clickMode === 'DEAD_ZONE') {
+      // Single-click on existing dead zone removes it
+      const existingZone = sim.state.dead_zones?.find(
+        ([x1, y1, x2, y2]) => x >= x1 && x <= x2 && y >= y1 && y <= y2
+      );
+      if (existingZone) {
+        sim.removeDeadZone(existingZone[0], existingZone[1], existingZone[2], existingZone[3]);
+      }
+      // Drag-to-draw is handled by onDeadZoneDraw below
     } else {
       const isObstacle = sim.state.warehouse.dynamic_obstacles.some(
         obs => obs[0] === x && obs[1] === y
@@ -45,6 +58,14 @@ function App() {
       }
     }
   }, [clickMode, sim]);
+
+  /** Called when user finishes dragging to draw a dead zone */
+  const handleDeadZoneDraw = useCallback((x1: number, y1: number, x2: number, y2: number) => {
+    sim.addDeadZone(
+      Math.min(x1, x2), Math.min(y1, y2),
+      Math.max(x1, x2), Math.max(y1, y2)
+    );
+  }, [sim.addDeadZone]);
 
   return (
     <>
@@ -77,7 +98,7 @@ function App() {
                 id="click-mode-obstacle"
                 className={`click-mode-btn ${clickMode === 'OBSTACLE' ? 'active-obstacle' : ''}`}
                 onClick={() => setClickMode('OBSTACLE')}
-                title="Click grid cells to place obstacles"
+                title="Click grid cells to place/remove obstacles"
               >
                 🧱 Obstacle
               </button>
@@ -85,9 +106,17 @@ function App() {
                 id="click-mode-robot"
                 className={`click-mode-btn ${clickMode === 'ROBOT' ? 'active-robot' : ''}`}
                 onClick={() => setClickMode('ROBOT')}
-                title="Click grid cells to deploy a new robot"
+                title="Click grid cells to deploy/remove robots"
               >
-                🤖 Add Robot
+                🤖 Robot
+              </button>
+              <button
+                id="click-mode-deadzone"
+                className={`click-mode-btn ${clickMode === 'DEAD_ZONE' ? 'active-deadzone' : ''}`}
+                onClick={() => setClickMode('DEAD_ZONE')}
+                title="Click and drag to draw Wi-Fi dead zones"
+              >
+                📡 Dead Zone
               </button>
             </div>
           )}
@@ -126,6 +155,8 @@ function App() {
               selectedRobot={selectedRobotId}
               onSelectRobot={setSelectedRobotId}
               onCellClick={handleCellClick}
+              clickMode={clickMode}
+              onDeadZoneDraw={handleDeadZoneDraw}
             />
           </div>
 

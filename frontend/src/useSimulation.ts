@@ -160,6 +160,10 @@ export function useSimulation() {
     send('run_benchmark', { scenario: scenario || '10_BENCHMARK' }), [send]);
   const injectLatency = useCallback((value: number) => send('inject_latency', { value }), [send]);
   const dropPackets = useCallback((value: number) => send('drop_packets', { value }), [send]);
+  const addDeadZone = useCallback((x1: number, y1: number, x2: number, y2: number) =>
+    send('add_dead_zone', { x1, y1, x2, y2 }), [send]);
+  const removeDeadZone = useCallback((x1: number, y1: number, x2: number, y2: number) =>
+    send('remove_dead_zone', { x1, y1, x2, y2 }), [send]);
   const demoMode = useCallback(() => send('demo_mode'), [send]);
 
   return {
@@ -173,5 +177,6 @@ export function useSimulation() {
     failRobot, recoverRobot,
     runBenchmark, demoMode,
     injectLatency, dropPackets,
+    addDeadZone, removeDeadZone,
   };
 }
