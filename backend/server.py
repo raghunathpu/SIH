@@ -358,6 +358,16 @@ async def websocket_endpoint(ws: WebSocket):
                     "data": _benchmark_result,
                 }))
 
+            elif action == "run_benchmark":
+                scenario_id = cmd.get("scenario", "10_BENCHMARK")
+                # Run benchmark in a separate thread to prevent blocking the event loop
+                result = await asyncio.to_thread(run_benchmark, scenario_id)
+                _benchmark_result = result.to_dict()
+                await ws.send_text(json.dumps({
+                    "type": "benchmark_result",
+                    "data": _benchmark_result,
+                }))
+
             elif action == "demo_mode":
                 cfg = get_scenario("DEMO_MODE")
                 if cfg:

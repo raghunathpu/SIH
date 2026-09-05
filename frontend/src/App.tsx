@@ -147,6 +147,7 @@ function App() {
             onSetSpeed={sim.setSpeed}
             onLoadScenario={sim.loadScenario}
             onRunBenchmark={sim.runBenchmark}
+            isBenchmarking={sim.isBenchmarking}
             onUploadBlueprint={sim.uploadBlueprint}
           />
           

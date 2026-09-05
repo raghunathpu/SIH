@@ -9,6 +9,7 @@ export function useSimulation() {
   const [state, setState] = useState<SimulationState | null>(null);
   const [connected, setConnected] = useState(false);
   const [benchmark, setBenchmark] = useState<BenchmarkComparison | null>(null);
+  const [isBenchmarking, setIsBenchmarking] = useState(false);
   const [scenarios, setScenarios] = useState<ScenarioInfo[]>([]);
   const reconnectTimer = useRef<number | null>(null);
 
@@ -55,6 +56,7 @@ export function useSimulation() {
         const data = JSON.parse(evt.data);
         if (data.type === 'benchmark_result') {
           setBenchmark(data.data);
+          setIsBenchmarking(false);
         } else {
           setState(prev => {
             if (prev && !data.warehouse) {
@@ -156,8 +158,11 @@ export function useSimulation() {
     send('fail_robot', { robot_id }), [send]);
   const recoverRobot = useCallback((robot_id: string) =>
     send('recover_robot', { robot_id }), [send]);
-  const runBenchmark = useCallback((scenario?: string) =>
-    send('run_benchmark', { scenario: scenario || '10_BENCHMARK' }), [send]);
+  const runBenchmark = useCallback((scenario?: string | any) => {
+    const scenarioId = typeof scenario === 'string' ? scenario : '10_BENCHMARK';
+    setIsBenchmarking(true);
+    send('run_benchmark', { scenario: scenarioId });
+  }, [send]);
   const injectLatency = useCallback((value: number) => send('inject_latency', { value }), [send]);
   const dropPackets = useCallback((value: number) => send('drop_packets', { value }), [send]);
   const addDeadZone = useCallback((x1: number, y1: number, x2: number, y2: number) =>
@@ -174,6 +179,7 @@ export function useSimulation() {
     state,
     connected,
     benchmark,
+    isBenchmarking,
     scenarios,
     play, pause, step, reset,
     setSpeed, loadScenario,

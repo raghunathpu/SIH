@@ -11,11 +11,12 @@ interface Props {
   onSetSpeed: (speed: number) => void;
   onLoadScenario: (id: string, baseline?: boolean) => void;
   onRunBenchmark: () => void;
+  isBenchmarking: boolean;
   onUploadBlueprint: (layout: string[]) => void;
 }
 
 export const ControlBar: React.FC<Props> = ({
-  state, scenarios, onPlay, onPause, onStep, onReset, onSetSpeed, onLoadScenario, onRunBenchmark, onUploadBlueprint
+  state, scenarios, onPlay, onPause, onStep, onReset, onSetSpeed, onLoadScenario, onRunBenchmark, isBenchmarking, onUploadBlueprint
 }) => {
   const fileInputRef = React.useRef<HTMLInputElement>(null);
 
@@ -130,8 +131,8 @@ export const ControlBar: React.FC<Props> = ({
         <button className="btn btn-secondary" onClick={() => fileInputRef.current?.click()} title="Upload Custom Grid Blueprint">
           📁 Upload Map
         </button>
-        <button className="btn btn-benchmark" onClick={onRunBenchmark}>
-          📊 Benchmark
+        <button className="btn btn-benchmark" onClick={onRunBenchmark} disabled={isBenchmarking}>
+          {isBenchmarking ? '⏳ Running...' : '📊 Benchmark'}
         </button>
       </div>
     </div>
